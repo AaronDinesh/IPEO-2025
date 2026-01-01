@@ -141,6 +141,7 @@ class GeoPlantDataset(Dataset):
         self.survey_ids = list(survey_ids)
         self.labels = labels
         self.env = env
+        self.env_cols = list(env.columns)
         self.ts = ts
         self.ts_index = {sid: idx for idx, sid in enumerate(ts_sids)}
         self.rgb_root = rgb_root
@@ -164,12 +165,18 @@ class GeoPlantDataset(Dataset):
         sid = self.survey_ids[idx]
         label = torch.from_numpy(self.labels[idx])
 
-        env_vec = torch.tensor(
-            self.env.loc[sid].to_numpy(np.float32), dtype=torch.float32
-        )
+        if sid in self.env.index:
+            env_vec = torch.tensor(
+                self.env.loc[sid].to_numpy(np.float32), dtype=torch.float32
+            )
+        else:
+            env_vec = torch.zeros(len(self.env_cols), dtype=torch.float32)
 
-        ts_idx = self.ts_index[sid]
-        ts_tensor = torch.tensor(self.ts[ts_idx], dtype=torch.float32)
+        if sid in self.ts_index:
+            ts_idx = self.ts_index[sid]
+            ts_tensor = torch.tensor(self.ts[ts_idx], dtype=torch.float32)
+        else:
+            ts_tensor = torch.zeros(self.ts.shape[1:], dtype=torch.float32)
 
         if self.use_images:
             img_path = patch_path(self.rgb_root, sid)
@@ -440,11 +447,15 @@ def main() -> None:
     env = load_env_features(env_path)
     ts, ts_sids = load_time_series(ts_root, "train")
 
-    common_ids = set(label_sids) & set(env.index.tolist()) & set(ts_sids)
-    missing = len(label_sids) - len(common_ids)
-    if missing > 0:
-        print(f"Skipping {missing} surveys missing env or time-series data.")
-    common_ids = sorted(common_ids)
+    all_ids = set(label_sids)
+    missing_env = len(all_ids - set(env.index.tolist()))
+    missing_ts = len(all_ids - set(ts_sids))
+    if missing_env > 0:
+        print(f"{missing_env} surveys missing env features will use zero fill.")
+    if missing_ts > 0:
+        print(f"{missing_ts} surveys missing time-series will use zero fill.")
+
+    common_ids = sorted(all_ids)
     if use_img and args.require_img:
         common_ids = filter_ids_with_images(common_ids, rgb_root)
 
