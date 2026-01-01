@@ -314,7 +314,14 @@ def run_epoch(
     all_logits: List[np.ndarray] = []
     all_labels: List[np.ndarray] = []
 
-    for batch in tqdm(loader, desc="train" if is_train else "eval", leave=False):
+    for batch in tqdm(
+        loader,
+        desc="train" if is_train else "eval",
+        total=len(loader),
+        leave=True,
+        dynamic_ncols=True,
+        mininterval=0.1,
+    ):
         env, ts, img, labels, _ = batch
         env = env.to(device)
         ts = ts.to(device)
@@ -465,20 +472,22 @@ def main() -> None:
     )
 
     sampler = make_weighted_sampler(train_labels) if args.use_sampler else None
+    pin_memory = torch.cuda.is_available()
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
         sampler=sampler,
         shuffle=sampler is None,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
 
     pos_weight = build_pos_weight(train_labels, cap=args.pos_weight_cap).to(device)
