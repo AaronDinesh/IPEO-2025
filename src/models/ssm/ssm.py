@@ -15,6 +15,7 @@ class SSMOutputs:
     logits: List[Tensor]
     states: List[Tensor]
     reg_loss: Tensor
+    step_masks: List[Tensor]
 
 
 class ResidualMLP(nn.Module):
@@ -117,6 +118,9 @@ class StateSpaceModel(nn.Module):
         env: Optional[Tensor] = None,
         ts: Optional[Tensor] = None,
         img: Optional[Tensor] = None,
+        env_mask: Optional[Tensor] = None,
+        ts_mask: Optional[Tensor] = None,
+        img_mask: Optional[Tensor] = None,
     ) -> SSMOutputs:
         batch = None
         for tensor in (env, ts, img):
@@ -130,27 +134,40 @@ class StateSpaceModel(nn.Module):
         logits: List[Tensor] = []
         states: List[Tensor] = []
         reg_terms: List[Tensor] = []
+        masks: List[Tensor] = []
 
         if env is not None:
+            m = env_mask.float() if env_mask is not None else torch.ones(batch, device=state.device)
+            prev = state
             env_feat = self.env_encoder(env)
-            state, reg = self._fuse(state, env_feat, self.fuse_env)
+            fused, reg = self._fuse(state, env_feat, self.fuse_env)
+            state = m.unsqueeze(1) * fused + (1 - m.unsqueeze(1)) * prev
             logits.append(self.decoder(state))
-            reg_terms.append(reg)
+            reg_terms.append(reg * m.mean())
             states.append(state)
+            masks.append(m)
 
         if ts is not None:
+            m = ts_mask.float() if ts_mask is not None else torch.ones(batch, device=state.device)
+            prev = state
             ts_feat = self.ts_encoder(ts)
-            state, reg = self._fuse(state, ts_feat, self.fuse_ts)
+            fused, reg = self._fuse(state, ts_feat, self.fuse_ts)
+            state = m.unsqueeze(1) * fused + (1 - m.unsqueeze(1)) * prev
             logits.append(self.decoder(state))
-            reg_terms.append(reg)
+            reg_terms.append(reg * m.mean())
             states.append(state)
+            masks.append(m)
 
         if img is not None:
+            m = img_mask.float() if img_mask is not None else torch.ones(batch, device=state.device)
+            prev = state
             img_feat = self.img_encoder(img)
-            state, reg = self._fuse(state, img_feat, self.fuse_img)
+            fused, reg = self._fuse(state, img_feat, self.fuse_img)
+            state = m.unsqueeze(1) * fused + (1 - m.unsqueeze(1)) * prev
             logits.append(self.decoder(state))
-            reg_terms.append(reg)
+            reg_terms.append(reg * m.mean())
             states.append(state)
+            masks.append(m)
 
         reg_loss = torch.stack(reg_terms).mean() if reg_terms else torch.tensor(0.0, device=state.device)
-        return SSMOutputs(logits=logits, states=states, reg_loss=reg_loss)
+        return SSMOutputs(logits=logits, states=states, reg_loss=reg_loss, step_masks=masks)

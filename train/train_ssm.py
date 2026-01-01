@@ -165,14 +165,18 @@ class GeoPlantDataset(Dataset):
         sid = self.survey_ids[idx]
         label = torch.from_numpy(self.labels[idx])
 
-        if sid in self.env.index:
+        env_mask = sid in self.env.index
+        ts_mask = sid in self.ts_index
+        img_mask = False
+
+        if env_mask:
             env_vec = torch.tensor(
                 self.env.loc[sid].to_numpy(np.float32), dtype=torch.float32
             )
         else:
             env_vec = torch.zeros(len(self.env_cols), dtype=torch.float32)
 
-        if sid in self.ts_index:
+        if ts_mask:
             ts_idx = self.ts_index[sid]
             ts_tensor = torch.tensor(self.ts[ts_idx], dtype=torch.float32)
         else:
@@ -188,13 +192,24 @@ class GeoPlantDataset(Dataset):
                     self._missing_img_warned = True
                 img_tensor = torch.zeros(3, 224, 224, dtype=torch.float32)
             else:
+                img_mask = True
                 with Image.open(img_path) as im:
                     im = im.convert("RGB")
                     img_tensor = self.transform(im)
         else:
             img_tensor = torch.zeros(3, 224, 224, dtype=torch.float32)
+            img_mask = False
 
-        return env_vec, ts_tensor, img_tensor, label, sid
+        return (
+            env_vec,
+            ts_tensor,
+            img_tensor,
+            torch.tensor(env_mask, dtype=torch.bool),
+            torch.tensor(ts_mask, dtype=torch.bool),
+            torch.tensor(img_mask, dtype=torch.bool),
+            label,
+            sid,
+        )
 
 
 def split_ids(
@@ -338,10 +353,13 @@ def run_epoch(
         dynamic_ncols=True,
         mininterval=0.1,
     ):
-        env, ts, img, labels, _ = batch
+        env, ts, img, env_mask, ts_mask, img_mask, labels, _ = batch
         env = env.to(device)
         ts = ts.to(device)
         img = img.to(device)
+        env_mask = env_mask.to(device)
+        ts_mask = ts_mask.to(device)
+        img_mask = img_mask.to(device)
         labels = labels.to(device)
 
         with torch.amp.autocast(device_type="cuda", enabled=device.type == "cuda" and scaler is not None):
@@ -349,9 +367,22 @@ def run_epoch(
                 env=env if use_env else None,
                 ts=ts if use_ts else None,
                 img=img if use_img else None,
+                env_mask=env_mask if use_env else None,
+                ts_mask=ts_mask if use_ts else None,
+                img_mask=img_mask if use_img else None,
             )
             logits = outputs.logits[-1]
-            primary_loss = sum(loss_fn(logit, labels) for logit in outputs.logits) / len(outputs.logits)
+            step_losses = []
+            for logit, mask in zip(outputs.logits, outputs.step_masks):
+                if mask is None:
+                    step_losses.append(loss_fn(logit, labels))
+                else:
+                    valid = mask.bool()
+                    if valid.any():
+                        step_losses.append(loss_fn(logit[valid], labels[valid]))
+                    else:
+                        step_losses.append(torch.tensor(0.0, device=logit.device))
+            primary_loss = sum(step_losses) / len(step_losses) if step_losses else torch.tensor(0.0, device=labels.device)
             loss = primary_loss + lambda_reg * outputs.reg_loss
 
         if is_train:
