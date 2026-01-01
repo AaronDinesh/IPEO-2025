@@ -5,11 +5,12 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import wandb
 from dotenv import load_dotenv
 from PIL import Image
@@ -206,10 +207,52 @@ def make_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler:
     return WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
 
+def build_class_priors(labels: np.ndarray, min_prior: float = 1e-4) -> torch.Tensor:
+    prior = labels.mean(axis=0)
+    prior = np.clip(prior, min_prior, 1 - min_prior)
+    return torch.tensor(prior, dtype=torch.float32)
+
+
+def build_cb_alpha(labels: np.ndarray, beta: float) -> torch.Tensor:
+    counts = labels.sum(axis=0)
+    effective_num = 1.0 - np.power(beta, counts)
+    alpha = (1.0 - beta) / (effective_num + 1e-8)
+    alpha = alpha / alpha.sum() * len(alpha)
+    return torch.tensor(alpha, dtype=torch.float32)
+
+
+def cb_focal_loss(
+    logits: Tensor,
+    targets: Tensor,
+    alpha: Tensor,
+    gamma: float,
+) -> Tensor:
+    targets = targets.float()
+    alpha = alpha.to(logits.device)
+
+    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    prob = torch.sigmoid(logits)
+    p_t = prob * targets + (1 - prob) * (1 - targets)
+    focal_factor = (1 - p_t).pow(gamma)
+
+    loss = focal_factor * bce * alpha
+    return loss.mean()
+
+
+def logit_adjusted_loss(
+    logits: Tensor,
+    targets: Tensor,
+    logit_prior: Tensor,
+    tau: float,
+) -> Tensor:
+    adj_logits = logits + tau * logit_prior.to(logits.device)
+    return F.binary_cross_entropy_with_logits(adj_logits, targets.float())
+
+
 @dataclass
 class EpochMetrics:
     loss: float
-    bce: float
+    primary: float
     reg: float
     macro_auc: float
     micro_auc: float
@@ -245,9 +288,12 @@ def compute_metrics(y_true: np.ndarray, logits: np.ndarray) -> Tuple[float, floa
 def run_epoch(
     model: StateSpaceModel,
     loader: DataLoader,
-    criterion,
+    loss_fn: Callable[[Tensor, Tensor], Tensor],
     device: torch.device,
     lambda_reg: float,
+    use_env: bool,
+    use_ts: bool,
+    use_img: bool,
     optimizer: Optional[torch.optim.Optimizer] = None,
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
 ) -> EpochMetrics:
@@ -257,7 +303,7 @@ def run_epoch(
     else:
         model.eval()
 
-    total_loss = total_bce = total_reg = 0.0
+    total_loss = total_primary = total_reg = 0.0
     all_logits: List[np.ndarray] = []
     all_labels: List[np.ndarray] = []
 
@@ -269,10 +315,14 @@ def run_epoch(
         labels = labels.to(device)
 
         with torch.cuda.amp.autocast(enabled=scaler is not None):
-            outputs = model(env=env, ts=ts, img=img)
+            outputs = model(
+                env=env if use_env else None,
+                ts=ts if use_ts else None,
+                img=img if use_img else None,
+            )
             logits = outputs.logits[-1]
-            bce_loss = sum(criterion(logit, labels) for logit in outputs.logits) / len(outputs.logits)
-            loss = bce_loss + lambda_reg * outputs.reg_loss
+            primary_loss = sum(loss_fn(logit, labels) for logit in outputs.logits) / len(outputs.logits)
+            loss = primary_loss + lambda_reg * outputs.reg_loss
 
         if is_train:
             optimizer.zero_grad()
@@ -285,7 +335,7 @@ def run_epoch(
                 optimizer.step()
 
         total_loss += float(loss.detach().cpu()) * labels.size(0)
-        total_bce += float(bce_loss.detach().cpu()) * labels.size(0)
+        total_primary += float(primary_loss.detach().cpu()) * labels.size(0)
         total_reg += float(outputs.reg_loss.detach().cpu()) * labels.size(0)
 
         all_logits.append(logits.detach().cpu().numpy())
@@ -298,7 +348,7 @@ def run_epoch(
     n = len(loader.dataset)
     return EpochMetrics(
         loss=total_loss / n,
-        bce=total_bce / n,
+        primary=total_primary / n,
         reg=total_reg / n,
         macro_auc=macro_auc,
         micro_auc=micro_auc,
@@ -321,6 +371,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pos-weight-cap", type=float, default=50.0)
     parser.add_argument("--lambda-reg", type=float, default=0.05)
     parser.add_argument("--use-sampler", action="store_true")
+    parser.add_argument("--loss-type", type=str, choices=["bce", "cb_focal", "logit_adj"], default="bce")
+    parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--cb-beta", type=float, default=0.999)
+    parser.add_argument("--logit-tau", type=float, default=1.0)
+    parser.add_argument("--no-env", action="store_true", help="Disable env/climate modality.")
+    parser.add_argument("--no-ts", action="store_true", help="Disable time-series modality.")
+    parser.add_argument("--no-img", action="store_true", help="Disable image modality.")
     parser.add_argument("--project", type=str, default="geo-plant-ssm")
     parser.add_argument("--entity", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="offline")
@@ -336,6 +393,10 @@ def main() -> None:
     args = parse_args()
 
     seed_everything(args.seed)
+
+    use_env = not args.no_env
+    use_ts = not args.no_ts
+    use_img = not args.no_img
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -359,7 +420,10 @@ def main() -> None:
     missing = len(label_sids) - len(common_ids)
     if missing > 0:
         print(f"Skipping {missing} surveys missing at least one modality.")
-    common_ids = filter_ids_with_images(sorted(common_ids), rgb_root)
+    if use_img:
+        common_ids = filter_ids_with_images(sorted(common_ids), rgb_root)
+    else:
+        common_ids = sorted(common_ids)
 
     train_ids, val_ids = split_ids(sorted(common_ids), args.val_ratio, args.seed)
     if args.max_train:
@@ -380,6 +444,7 @@ def main() -> None:
         ts_sids=ts_sids,
         rgb_root=rgb_root,
         image_size=args.image_size,
+        use_images=use_img,
     )
     val_ds = GeoPlantDataset(
         survey_ids=val_ids,
@@ -389,6 +454,7 @@ def main() -> None:
         ts_sids=ts_sids,
         rgb_root=rgb_root,
         image_size=args.image_size,
+        use_images=use_img,
     )
 
     sampler = make_weighted_sampler(train_labels) if args.use_sampler else None
@@ -409,7 +475,39 @@ def main() -> None:
     )
 
     pos_weight = build_pos_weight(train_labels, cap=args.pos_weight_cap).to(device)
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    class_priors = build_class_priors(train_labels)
+    cb_alpha = build_cb_alpha(train_labels, beta=args.cb_beta)
+
+    def make_loss() -> Callable[[Tensor, Tensor], Tensor]:
+        if args.loss_type == "bce":
+            criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+            def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
+                return criterion(logits, labels)
+
+            return loss_fn
+
+        if args.loss_type == "cb_focal":
+            alpha = cb_alpha
+            gamma = args.focal_gamma
+
+            def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
+                return cb_focal_loss(logits, labels, alpha=alpha, gamma=gamma)
+
+            return loss_fn
+
+        if args.loss_type == "logit_adj":
+            logit_prior = torch.log(class_priors / (1 - class_priors))
+            tau = args.logit_tau
+
+            def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
+                return logit_adjusted_loss(logits, labels, logit_prior=logit_prior, tau=tau)
+
+            return loss_fn
+
+        raise ValueError(f"Unknown loss type: {args.loss_type}")
+
+    loss_fn = make_loss()
 
     model = StateSpaceModel(
         num_species=args.species_count,
@@ -437,18 +535,24 @@ def main() -> None:
         train_metrics = run_epoch(
             model,
             train_loader,
-            criterion,
+            loss_fn,
             device,
             lambda_reg=args.lambda_reg,
+            use_env=use_env,
+            use_ts=use_ts,
+            use_img=use_img,
             optimizer=optimizer,
             scaler=scaler,
         )
         val_metrics = run_epoch(
             model,
             val_loader,
-            criterion,
+            loss_fn,
             device,
             lambda_reg=args.lambda_reg,
+            use_env=use_env,
+            use_ts=use_ts,
+            use_img=use_img,
             optimizer=None,
             scaler=None,
         )
@@ -456,14 +560,14 @@ def main() -> None:
         log_payload = {
             "epoch": epoch,
             "train/loss": train_metrics.loss,
-            "train/bce": train_metrics.bce,
+            "train/primary_loss": train_metrics.primary,
             "train/reg": train_metrics.reg,
             "train/macro_auc": train_metrics.macro_auc,
             "train/micro_auc": train_metrics.micro_auc,
             "train/macro_ap": train_metrics.macro_ap,
             "train/recall": train_metrics.recall,
             "val/loss": val_metrics.loss,
-            "val/bce": val_metrics.bce,
+            "val/primary_loss": val_metrics.primary,
             "val/reg": val_metrics.reg,
             "val/macro_auc": val_metrics.macro_auc,
             "val/micro_auc": val_metrics.micro_auc,
