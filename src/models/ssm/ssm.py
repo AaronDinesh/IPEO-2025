@@ -41,7 +41,7 @@ class ResidualMLP(nn.Module):
 class ImageEncoder(nn.Module):
     """ResNet50 backbone with a small projection head."""
 
-    def __init__(self, out_dim: int, freeze_backbone: bool = False):
+    def __init__(self, out_dim: int, freeze_backbone: bool = True):
         super().__init__()
         backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
         if freeze_backbone:
@@ -87,7 +87,7 @@ class StateSpaceModel(nn.Module):
         state_dim: int,
         env_dim: int,
         ts_channels: int,
-        img_freeze_backbone: bool = False,
+        img_freeze_backbone: bool = True,
         dropout: float = 0.1,
     ):
         super().__init__()

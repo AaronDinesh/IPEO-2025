@@ -383,7 +383,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="offline")
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--freeze-img", action="store_true")
+    parser.add_argument("--unfreeze-img", action="store_true", help="Fine-tune image backbone instead of freezing.")
     parser.add_argument("--max-train", type=int, default=None, help="Optional cap on train samples for quick runs.")
     return parser.parse_args()
 
@@ -514,7 +514,7 @@ def main() -> None:
         state_dim=args.state_dim,
         env_dim=train_ds.env.shape[1],
         ts_channels=train_ds.ts.shape[2],
-        img_freeze_backbone=args.freeze_img,
+        img_freeze_backbone=not args.unfreeze_img,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
