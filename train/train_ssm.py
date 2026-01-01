@@ -19,6 +19,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from tqdm.auto import tqdm
+from scipy.special import expit
 
 # Ensure local src/ is importable when running as a script
 import sys
@@ -261,7 +262,8 @@ class EpochMetrics:
 
 
 def compute_metrics(y_true: np.ndarray, logits: np.ndarray) -> Tuple[float, float, float, float]:
-    probs = 1.0 / (1.0 + np.exp(-logits))
+    logits = np.clip(logits, -30.0, 30.0)
+    probs = expit(logits)
     macro_auc_list = []
     macro_ap_list = []
     for k in range(probs.shape[1]):
@@ -314,7 +316,7 @@ def run_epoch(
         img = img.to(device)
         labels = labels.to(device)
 
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with torch.amp.autocast(device_type="cuda", enabled=device.type == "cuda" and scaler is not None):
             outputs = model(
                 env=env if use_env else None,
                 ts=ts if use_ts else None,

@@ -65,7 +65,7 @@ class TimeSeriesEncoder(nn.Module):
             hidden_size=hidden_dim,
             num_layers=1,
             batch_first=True,
-            dropout=dropout,
+            dropout=0.0,  # dropout only applied when num_layers > 1
         )
         self.proj = nn.Linear(hidden_dim, out_dim)
 
