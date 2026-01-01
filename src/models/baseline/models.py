@@ -2,37 +2,43 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from encoder import ClimateVarsEncoder, TimeSeriesEncoder
+from encoder import ClimateVarsEncoder, TimeSeriesEncoder, ResNet50Encoder
 from decoder import SpeciesDecoder
-from torchvision.models import resnet50, ResNet50_Weights
 from torch.utils.data import Dataset
+import numpy as np
+
+# ----------------------------------------------------------------------------------------------------------------------------------
+# Dataset
 
 class MultiModalDataset(Dataset):
     """
     Custom dataset for multi-modal dataset
     """
     def __init__(self, env_vars: torch.Tensor, ts_data: torch.Tensor, images: torch.Tensor, labels: torch.Tensor):
-        self.env_vars = env_vars
-        self.ts_data = ts_data
-        self.images = images
-        self.labels = labels
+        self.env_vars = env_vars.astype(np.float32)
+        self.ts_data = ts_data.astype(np.float32)
+        self.images = images.astype(np.float32)
+        self.labels = labels.astype(np.float32)
     
     def __len__(self):
         return self.images.shape[0]
     
     def __getitem__(self, idx):
         return self.env_vars[idx], self.ts_data[idx], self.images[idx], self.labels[idx]
+    
+# ----------------------------------------------------------------------------------------------------------------------------------
+# Models
 
 class MultiModalFuserBase(nn.Module):
     """
     Parent class for fusion models
     """
-    def __init__(self, input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1):
+    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1):
         super().__init__()
         # Instantiate encoders for each modality
-        self.env_encoder = ClimateVarsEncoder(input_dim, hidden_dim, embed_dim)
-        self.time_encoder = TimeSeriesEncoder(embed_dim, rnn_layers, dropout)
-        self.image_encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
+        self.env_encoder = ClimateVarsEncoder(env_input_dim, hidden_dim, embed_dim)
+        self.time_encoder = TimeSeriesEncoder(landsat_input_dim, embed_dim, rnn_layers, dropout)
+        self.image_encoder = ResNet50Encoder(embed_dim)
         
         # Classification head
         self.decoder = SpeciesDecoder(embed_dim, hidden_dim)
@@ -41,8 +47,8 @@ class MultiModalSimpleFuser(MultiModalFuserBase):
     """
     Baseline model for fusing modalities
     """
-    def __init__(self, input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1, use_sum=True):
-        super().__init__(input_dim, hidden_dim, embed_dim, dropout, rnn_layers)
+    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1, use_sum=True):
+        super().__init__(env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout, rnn_layers)
                 
         # Fusion type
         self.use_sum = use_sum
@@ -66,8 +72,8 @@ class MultiModalAttentionFuser(MultiModalFuserBase):
     """
     Model using self attention as a fusing mechanism
     """
-    def __init__(self, input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1):
-        super().__init__(input_dim, hidden_dim, embed_dim, dropout, rnn_layers)
+    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1):
+        super().__init__(env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout, rnn_layers)
         
         self.attn_pooling = LearnedAggregation(embed_dim)
         
@@ -80,7 +86,7 @@ class MultiModalAttentionFuser(MultiModalFuserBase):
         # Fuse modalities
         tokens = torch.stack((x,y,z), dim=1)
         output = self.attn_pooling(tokens)
-            
+        
         # Binary classification for each plant species
         return self.decoder(output)
 
@@ -105,14 +111,15 @@ class AttentionPool2d(nn.Module):
     def forward(self, x: torch.Tensor, cls_q: torch.Tensor):
         x = self.norm(x)
         B, N, D = x.shape
-
-        q = self.q(cls_q.expand(B, -1, -1))
+        
+        cls_q = cls_q.view(1, 1, -1)          # (1, 1, D)
+        q = self.q(cls_q.expand(B, -1, -1))    # (B, 1, D)
         k, v = self.vk(x).reshape(B, N, 2, D).permute(2, 0, 1, 3).chunk(2, 0)
 
-        attn = q @ k.transpose(-2, -1)
+        attn = q @ k.transpose(-2, -1).squeeze(0)
         attn = attn.softmax(dim=-1)
 
-        x = (attn @ v).transpose(1, 2).squeeze(-1) # shape (B,D)
+        x = (attn @ v.squeeze(0)).transpose(1, 2).squeeze(-1) # shape (B,D)
         return self.proj(x)
 
 class LearnedAggregation(nn.Module):

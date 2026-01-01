@@ -10,7 +10,7 @@ def train_multi_modal(model, dataloader, val_loader, epochs, optimizer, schedule
     losses = []
     vlosses = []
     
-    for epoch in tqdm(range(epochs), desc='Epoch:'):
+    for epoch in tqdm(range(epochs), desc='Epoch'):
         model.train()
         
         batch_loss = []
@@ -48,3 +48,5 @@ def train_multi_modal(model, dataloader, val_loader, epochs, optimizer, schedule
             vlosses.append(np.mean(batch_vloss))
 
         print(f"Epoch {epoch+1}/{epochs} | Train Loss: {losses[-1]:.4f} | Val Loss: {vlosses[-1]:.4f}")
+        
+    return losses, vlosses
