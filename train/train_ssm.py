@@ -26,6 +26,11 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+try:
+    torch.multiprocessing.set_sharing_strategy("file_system")
+except RuntimeError:
+    pass
+
 from src.models.ssm.ssm import StateSpaceModel  # noqa: E402
 
 
@@ -384,7 +389,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--entity", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="offline")
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--unfreeze-img", action="store_true", help="Fine-tune image backbone instead of freezing.")
     parser.add_argument("--max-train", type=int, default=None, help="Optional cap on train samples for quick runs.")
     return parser.parse_args()
