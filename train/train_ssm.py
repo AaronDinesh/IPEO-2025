@@ -136,6 +136,7 @@ class GeoPlantDataset(Dataset):
         rgb_root: Path,
         image_size: int = 224,
         use_images: bool = True,
+        allow_missing_images: bool = True,
     ):
         self.survey_ids = list(survey_ids)
         self.labels = labels
@@ -144,6 +145,8 @@ class GeoPlantDataset(Dataset):
         self.ts_index = {sid: idx for idx, sid in enumerate(ts_sids)}
         self.rgb_root = rgb_root
         self.use_images = use_images
+        self.allow_missing_images = allow_missing_images
+        self._missing_img_warned = False
         self.transform = transforms.Compose(
             [
                 transforms.Resize((image_size, image_size)),
@@ -171,10 +174,16 @@ class GeoPlantDataset(Dataset):
         if self.use_images:
             img_path = patch_path(self.rgb_root, sid)
             if not img_path.exists():
-                raise FileNotFoundError(f"Image not found for surveyId={sid}: {img_path}")
-            with Image.open(img_path) as im:
-                im = im.convert("RGB")
-                img_tensor = self.transform(im)
+                if not self.allow_missing_images:
+                    raise FileNotFoundError(f"Image not found for surveyId={sid}: {img_path}")
+                if not self._missing_img_warned:
+                    print("Warning: missing RGB patches encountered; filling zeros for missing images.")
+                    self._missing_img_warned = True
+                img_tensor = torch.zeros(3, 224, 224, dtype=torch.float32)
+            else:
+                with Image.open(img_path) as im:
+                    im = im.convert("RGB")
+                    img_tensor = self.transform(im)
         else:
             img_tensor = torch.zeros(3, 224, 224, dtype=torch.float32)
 
@@ -392,6 +401,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-env", action="store_true", help="Disable env/climate modality.")
     parser.add_argument("--no-ts", action="store_true", help="Disable time-series modality.")
     parser.add_argument("--no-img", action="store_true", help="Disable image modality.")
+    parser.add_argument("--require-img", action="store_true", help="Error if an image patch is missing.")
     parser.add_argument("--project", type=str, default="geo-plant-ssm")
     parser.add_argument("--entity", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="offline")
@@ -433,11 +443,10 @@ def main() -> None:
     common_ids = set(label_sids) & set(env.index.tolist()) & set(ts_sids)
     missing = len(label_sids) - len(common_ids)
     if missing > 0:
-        print(f"Skipping {missing} surveys missing at least one modality.")
-    if use_img:
-        common_ids = filter_ids_with_images(sorted(common_ids), rgb_root)
-    else:
-        common_ids = sorted(common_ids)
+        print(f"Skipping {missing} surveys missing env or time-series data.")
+    common_ids = sorted(common_ids)
+    if use_img and args.require_img:
+        common_ids = filter_ids_with_images(common_ids, rgb_root)
 
     train_ids, val_ids = split_ids(sorted(common_ids), args.val_ratio, args.seed)
     if args.max_train:
@@ -459,6 +468,7 @@ def main() -> None:
         rgb_root=rgb_root,
         image_size=args.image_size,
         use_images=use_img,
+        allow_missing_images=not args.require_img,
     )
     val_ds = GeoPlantDataset(
         survey_ids=val_ids,
@@ -469,6 +479,7 @@ def main() -> None:
         rgb_root=rgb_root,
         image_size=args.image_size,
         use_images=use_img,
+        allow_missing_images=not args.require_img,
     )
 
     sampler = make_weighted_sampler(train_labels) if args.use_sampler else None
