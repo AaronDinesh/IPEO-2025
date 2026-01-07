@@ -20,7 +20,7 @@ mkdir -p slurm_logs
 DATA_ROOT=${DATA_ROOT:-data}
 
 srun python train/train_ssm.py \
-    --data-root "${DATA_ROOT}" \
+    --data-root "/scratch/dinesh/geoplant" \
     --species-count 342 \
     --state-dim 256 \
     --batch-size 8 \
@@ -33,4 +33,5 @@ srun python train/train_ssm.py \
     --focal-gamma 2.0 \
     --wandb-mode online \
     --num-workers 4 \
-    --image-size 224
+    --image-size 224 \
+    --checkpoint-dir /scratch/dinesh/checkpoints
