@@ -15,8 +15,6 @@ module load gcc cuda python
 
 source .venv/bin/activate
 
-mkdir -p slurm_logs
-
 DATA_ROOT=${DATA_ROOT:-data}
 
 srun python train/train_ssm.py \
