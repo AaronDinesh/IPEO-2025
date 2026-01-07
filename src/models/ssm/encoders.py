@@ -76,7 +76,7 @@ class MLPEncoder(AbstractSSMEncoder):
         ]
 
         # Add the hidden layers
-        for _ in range(hidden_layer_dim):
+        for _ in range(hidden_layers):
             self.layers.append(
                 nn.Linear(in_features=hidden_layer_dim, out_features=hidden_layer_dim)
             )
@@ -130,9 +130,11 @@ class RNNEncoder(AbstractSSMEncoder):
             out, h_n = layer(input)
             input = self.activation(out)
 
-        output, h_n = self.layers[-1](torch.cat([input, state], dim=1))
+        state_exp = state.unsqueeze(1).expand(-1, input.size(1), -1)
+        fused = torch.cat([input, state_exp], dim=2)
+        output, h_n = self.layers[-1](fused)
 
-        return output
+        return h_n[-1]
 
 class LSTMEncoder(AbstractSSMEncoder):
     def __init__(
@@ -161,6 +163,8 @@ class LSTMEncoder(AbstractSSMEncoder):
             out, tups = layer(input)
             input = self.activation(out)
 
-        output, tups = self.layers[-1](torch.cat([input, state], dim=1))
+        state_exp = state.unsqueeze(1).expand(-1, input.size(1), -1)
+        fused = torch.cat([input, state_exp], dim=2)
+        output, tups = self.layers[-1](fused)
 
-        return output
+        return tups[0][-1]

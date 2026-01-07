@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+import torch
 import torch.nn as nn
 from torch import Tensor
 
@@ -35,7 +36,7 @@ class ClassificationDecoder(AbstractSSMDecoder):
         ]
 
         # Add the hidden layers
-        for _ in range(hidden_layer_dim):
+        for _ in range(hidden_layers):
             self.layers.append(
                 nn.Linear(in_features=hidden_layer_dim, out_features=hidden_layer_dim)
             )
@@ -52,4 +53,5 @@ class ClassificationDecoder(AbstractSSMDecoder):
 
     def forward(self, state: Tensor) -> Tensor:
         x = self.encoder(state)
+        x = torch.cat([x, state], dim=1)
         return self.output_layer(x)
