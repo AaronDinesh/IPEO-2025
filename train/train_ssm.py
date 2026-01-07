@@ -6,6 +6,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+import math
 
 import numpy as np
 import pandas as pd
@@ -258,6 +259,24 @@ def build_cb_alpha(labels: np.ndarray, beta: float) -> torch.Tensor:
     return torch.tensor(alpha, dtype=torch.float32)
 
 
+def save_checkpoint(
+    path: Path,
+    model: torch.nn.Module,
+    optimizer: Optional[torch.optim.Optimizer],
+    scaler: Optional[torch.cuda.amp.GradScaler],
+    epoch: int,
+    args: argparse.Namespace,
+) -> None:
+    payload = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
+        "scaler_state": scaler.state_dict() if scaler is not None else None,
+        "args": vars(args),
+    }
+    torch.save(payload, path)
+
+
 def cb_focal_loss(
     logits: Tensor,
     targets: Tensor,
@@ -447,6 +466,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--unfreeze-img", action="store_true", help="Fine-tune image backbone instead of freezing.")
     parser.add_argument("--max-train", type=int, default=None, help="Optional cap on train samples for quick runs.")
+    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"))
+    parser.add_argument("--ckpt-every", type=int, default=10, help="Save checkpoint every N epochs.")
     return parser.parse_args()
 
 
@@ -455,6 +476,9 @@ def main() -> None:
     args = parse_args()
 
     seed_everything(args.seed)
+    args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_macro_auc = float("-inf")
+    best_ckpt_path: Optional[Path] = None
 
     use_env = not args.no_env
     use_ts = not args.no_ts
@@ -651,7 +675,25 @@ def main() -> None:
             f"val_macro_auc={val_metrics.macro_auc:.3f} val_recall={val_metrics.recall:.3f}"
         )
 
+        if args.ckpt_every > 0 and epoch % args.ckpt_every == 0:
+            save_checkpoint(
+                args.checkpoint_dir / f"checkpoint_epoch_{epoch}.pt",
+                model,
+                optimizer,
+                scaler,
+                epoch,
+                args,
+            )
+
+        if math.isfinite(val_metrics.macro_auc) and val_metrics.macro_auc > best_macro_auc:
+            if best_ckpt_path and best_ckpt_path.exists():
+                best_ckpt_path.unlink()
+            best_macro_auc = val_metrics.macro_auc
+            best_ckpt_path = args.checkpoint_dir / f"HIGHEST_ACCURACY_{epoch}.pt"
+            save_checkpoint(best_ckpt_path, model, optimizer, scaler, epoch, args)
+
     wandb.finish()
+    save_checkpoint(args.checkpoint_dir / "checkpoint_final.pt", model, optimizer, scaler, args.epochs, args)
 
 
 if __name__ == "__main__":
