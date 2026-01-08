@@ -1,29 +1,27 @@
 from __future__ import annotations
 
 import argparse
-import json
+import math
 import random
+
+# Ensure local src/ is importable when running as a script
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
-import math
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 import wandb
 from dotenv import load_dotenv
 from PIL import Image
+from scipy.special import expit
 from sklearn.metrics import average_precision_score, roc_auc_score
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from tqdm.auto import tqdm
-from scipy.special import expit
-
-# Ensure local src/ is importable when running as a script
-import sys
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
@@ -44,29 +42,21 @@ def seed_everything(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def build_species_vocab(
-    metadata_path: Path,
-    num_species: int,
-    vocab_path: Optional[Path] = None,
-) -> Tuple[Dict[int, int], pd.Series]:
+def build_species_vocab(metadata_path: Path) -> Tuple[Dict[int, int], pd.Series]:
+    """Build mapping from speciesId to class index using first appearance order."""
+
     df = pd.read_csv(metadata_path)
     df["speciesId"] = df["speciesId"].astype(int)
     freq = df["speciesId"].value_counts()
 
-    if vocab_path is not None and vocab_path.exists():
-        vocab = {int(k): int(v) for k, v in json.loads(vocab_path.read_text()).items()}
-    else:
-        top_species = freq.index[:num_species]
-        vocab = {int(sid): idx for idx, sid in enumerate(top_species)}
-        if vocab_path is not None:
-            vocab_path.write_text(json.dumps(vocab))
+    # Preserve the order of first appearance in the dataset to assign indices.
+    unique_ids = pd.unique(df["speciesId"])
+    vocab = {int(sid): idx for idx, sid in enumerate(unique_ids)}
 
     return vocab, freq
 
 
-def build_labels(
-    metadata_path: Path, vocab: Dict[int, int]
-) -> Tuple[np.ndarray, List[int]]:
+def build_labels(metadata_path: Path, vocab: Dict[int, int]) -> Tuple[np.ndarray, List[int]]:
     df = pd.read_csv(metadata_path)
     df["speciesId"] = df["speciesId"].astype(int)
     grouped = df.groupby("surveyId")["speciesId"].apply(list)
@@ -92,7 +82,11 @@ def load_time_series(ts_root: Path, split: str) -> Tuple[np.ndarray, List[int]]:
     band_arrays = []
     survey_ids: Optional[np.ndarray] = None
     for band in band_names:
-        csv_path = ts_root / f"PA-{split}-landsat_time_series" / f"PA-{split}-landsat_time_series-{band}.csv"
+        csv_path = (
+            ts_root
+            / f"PA-{split}-landsat_time_series"
+            / f"PA-{split}-landsat_time_series-{band}.csv"
+        )
         df = pd.read_csv(csv_path)
         df = df.sort_values("surveyId")
         if survey_ids is None:
@@ -149,15 +143,11 @@ class GeoPlantDataset(Dataset):
         self.use_images = use_images
         self.allow_missing_images = allow_missing_images
         self._missing_img_warned = False
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
+        self.transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
     def __len__(self) -> int:
         return len(self.survey_ids)
@@ -171,9 +161,7 @@ class GeoPlantDataset(Dataset):
         img_mask = False
 
         if env_mask:
-            env_vec = torch.tensor(
-                self.env.loc[sid].to_numpy(np.float32), dtype=torch.float32
-            )
+            env_vec = torch.tensor(self.env.loc[sid].to_numpy(np.float32), dtype=torch.float32)
         else:
             env_vec = torch.zeros(len(self.env_cols), dtype=torch.float32)
 
@@ -189,7 +177,9 @@ class GeoPlantDataset(Dataset):
                 if not self.allow_missing_images:
                     raise FileNotFoundError(f"Image not found for surveyId={sid}: {img_path}")
                 if not self._missing_img_warned:
-                    print("Warning: missing RGB patches encountered; filling zeros for missing images.")
+                    print(
+                        "Warning: missing RGB patches encountered; filling zeros for missing images."
+                    )
                     self._missing_img_warned = True
                 img_tensor = torch.zeros(3, 224, 224, dtype=torch.float32)
             else:
@@ -213,20 +203,19 @@ class GeoPlantDataset(Dataset):
         )
 
 
-def split_ids(
-    ids: Sequence[int], val_ratio: float, seed: int
-) -> Tuple[List[int], List[int]]:
+def split_ids(ids: Sequence[int], val_ratio: float, seed: int) -> Tuple[List[int], List[int]]:
     ids = list(ids)
     random.Random(seed).shuffle(ids)
     split = int(len(ids) * (1 - val_ratio))
     return ids[:split], ids[split:]
 
 
-def build_pos_weight(labels: np.ndarray, cap: float = 50.0) -> torch.Tensor:
-    pos = labels.sum(axis=0)
-    neg = labels.shape[0] - pos
-    weight = neg / (pos + 1e-6)
-    weight = np.clip(weight, 1.0, cap)
+def build_pos_weight(labels: np.ndarray, eps: float = 1e-6) -> torch.Tensor:
+    """Compute pos_weight as mean(count) / count to upweight rarer classes."""
+
+    counts = labels.sum(axis=0)
+    mean_count = counts.mean()
+    weight = mean_count / (counts + eps)
     return torch.tensor(weight, dtype=torch.float32)
 
 
@@ -245,20 +234,6 @@ def make_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler:
     return WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
 
-def build_class_priors(labels: np.ndarray, min_prior: float = 1e-4) -> torch.Tensor:
-    prior = labels.mean(axis=0)
-    prior = np.clip(prior, min_prior, 1 - min_prior)
-    return torch.tensor(prior, dtype=torch.float32)
-
-
-def build_cb_alpha(labels: np.ndarray, beta: float) -> torch.Tensor:
-    counts = labels.sum(axis=0)
-    effective_num = 1.0 - np.power(beta, counts)
-    alpha = (1.0 - beta) / (effective_num + 1e-8)
-    alpha = alpha / alpha.sum() * len(alpha)
-    return torch.tensor(alpha, dtype=torch.float32)
-
-
 def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
@@ -275,34 +250,6 @@ def save_checkpoint(
         "args": vars(args),
     }
     torch.save(payload, path)
-
-
-def cb_focal_loss(
-    logits: Tensor,
-    targets: Tensor,
-    alpha: Tensor,
-    gamma: float,
-) -> Tensor:
-    targets = targets.float()
-    alpha = alpha.to(logits.device)
-
-    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-    prob = torch.sigmoid(logits)
-    p_t = prob * targets + (1 - prob) * (1 - targets)
-    focal_factor = (1 - p_t).pow(gamma)
-
-    loss = focal_factor * bce * alpha
-    return loss.mean()
-
-
-def logit_adjusted_loss(
-    logits: Tensor,
-    targets: Tensor,
-    logit_prior: Tensor,
-    tau: float,
-) -> Tensor:
-    adj_logits = logits + tau * logit_prior.to(logits.device)
-    return F.binary_cross_entropy_with_logits(adj_logits, targets.float())
 
 
 @dataclass
@@ -381,7 +328,9 @@ def run_epoch(
         img_mask = img_mask.to(device)
         labels = labels.to(device)
 
-        with torch.amp.autocast(device_type="cuda", enabled=device.type == "cuda" and scaler is not None):
+        with torch.amp.autocast(
+            device_type="cuda", enabled=device.type == "cuda" and scaler is not None
+        ):
             outputs = model(
                 env=env if use_env else None,
                 ts=ts if use_ts else None,
@@ -401,7 +350,11 @@ def run_epoch(
                         step_losses.append(loss_fn(logit[valid], labels[valid]))
                     else:
                         step_losses.append(torch.tensor(0.0, device=logit.device))
-            primary_loss = sum(step_losses) / len(step_losses) if step_losses else torch.tensor(0.0, device=labels.device)
+            primary_loss = (
+                sum(step_losses) / len(step_losses)
+                if step_losses
+                else torch.tensor(0.0, device=labels.device)
+            )
             loss = primary_loss + lambda_reg * outputs.reg_loss
 
         if is_train:
@@ -440,34 +393,40 @@ def run_epoch(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MultiModN-style SSM on GeoPlant.")
     parser.add_argument("--data-root", type=Path, default=Path("data"))
-    parser.add_argument("--species-count", type=int, default=342)
-    parser.add_argument("--species-vocab", type=Path, default=Path("data/species_vocab.json"))
     parser.add_argument("--state-dim", type=int, default=256)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--val-ratio", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=67)
-    parser.add_argument("--pos-weight-cap", type=float, default=50.0)
     parser.add_argument("--lambda-reg", type=float, default=0.05)
     parser.add_argument("--use-sampler", action="store_true")
-    parser.add_argument("--loss-type", type=str, choices=["bce", "cb_focal", "logit_adj"], default="bce")
-    parser.add_argument("--focal-gamma", type=float, default=2.0)
-    parser.add_argument("--cb-beta", type=float, default=0.999)
-    parser.add_argument("--logit-tau", type=float, default=1.0)
     parser.add_argument("--no-env", action="store_true", help="Disable env/climate modality.")
     parser.add_argument("--no-ts", action="store_true", help="Disable time-series modality.")
     parser.add_argument("--no-img", action="store_true", help="Disable image modality.")
-    parser.add_argument("--require-img", action="store_true", help="Error if an image patch is missing.")
+    parser.add_argument(
+        "--require-img", action="store_true", help="Error if an image patch is missing."
+    )
     parser.add_argument("--project", type=str, default="geo-plant-ssm")
     parser.add_argument("--entity", type=str, default=None)
-    parser.add_argument("--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="offline")
+    parser.add_argument(
+        "--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="online"
+    )
+    parser.add_argument(
+        "--run-name", type=str, default=None, help="Optional human-friendly run name for wandb."
+    )
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--unfreeze-img", action="store_true", help="Fine-tune image backbone instead of freezing.")
-    parser.add_argument("--max-train", type=int, default=None, help="Optional cap on train samples for quick runs.")
+    parser.add_argument(
+        "--unfreeze-img", action="store_true", help="Fine-tune image backbone instead of freezing."
+    )
+    parser.add_argument(
+        "--max-train", type=int, default=None, help="Optional cap on train samples for quick runs."
+    )
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"))
-    parser.add_argument("--ckpt-every", type=int, default=10, help="Save checkpoint every N epochs.")
+    parser.add_argument(
+        "--ckpt-every", type=int, default=10, help="Save checkpoint every N epochs."
+    )
     return parser.parse_args()
 
 
@@ -487,11 +446,14 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     metadata_train = args.data_root / "PA_metadata_train.csv"
-    env_path = args.data_root / "EnvironmentalValues/Climate/Average 1981-2010/PA-train-bioclimatic.csv"
+    env_path = (
+        args.data_root / "EnvironmentalValues/Climate/Average 1981-2010/PA-train-bioclimatic.csv"
+    )
     ts_root = args.data_root / "SateliteTimeSeries-Landsat/values"
     rgb_root = args.data_root / "SatelitePatches/PA-train-RGB"
 
-    vocab, freq = build_species_vocab(metadata_train, args.species_count, args.species_vocab)
+    vocab, _ = build_species_vocab(metadata_train)
+    species_count = len(vocab)
     labels, label_sids = build_labels(metadata_train, vocab)
     label_density = labels.mean(axis=0)
     print(
@@ -567,43 +529,14 @@ def main() -> None:
         pin_memory=pin_memory,
     )
 
-    pos_weight = build_pos_weight(train_labels, cap=args.pos_weight_cap).to(device)
-    class_priors = build_class_priors(train_labels)
-    cb_alpha = build_cb_alpha(train_labels, beta=args.cb_beta)
+    pos_weight = build_pos_weight(train_labels).to(device)
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    def make_loss() -> Callable[[Tensor, Tensor], Tensor]:
-        if args.loss_type == "bce":
-            criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-            def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
-                return criterion(logits, labels)
-
-            return loss_fn
-
-        if args.loss_type == "cb_focal":
-            alpha = cb_alpha
-            gamma = args.focal_gamma
-
-            def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
-                return cb_focal_loss(logits, labels, alpha=alpha, gamma=gamma)
-
-            return loss_fn
-
-        if args.loss_type == "logit_adj":
-            logit_prior = torch.log(class_priors / (1 - class_priors))
-            tau = args.logit_tau
-
-            def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
-                return logit_adjusted_loss(logits, labels, logit_prior=logit_prior, tau=tau)
-
-            return loss_fn
-
-        raise ValueError(f"Unknown loss type: {args.loss_type}")
-
-    loss_fn = make_loss()
+    def loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
+        return criterion(logits, labels)
 
     model = StateSpaceModel(
-        num_species=args.species_count,
+        num_species=species_count,
         state_dim=args.state_dim,
         env_dim=train_ds.env.shape[1],
         ts_channels=train_ds.ts.shape[2],
@@ -613,15 +546,18 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
+    wandb_config = {**vars(args), "species_count": species_count}
+
     wandb_mode = args.wandb_mode
     if wandb_mode == "disabled":
-        wandb.init(mode="disabled")
+        wandb.init(mode="disabled", config=wandb_config, name=args.run_name)
     else:
         wandb.init(
             project=args.project,
             entity=args.entity,
             mode=wandb_mode,
-            config=vars(args),
+            config=wandb_config,
+            name=args.run_name,
         )
 
     for epoch in range(1, args.epochs + 1):
@@ -693,7 +629,9 @@ def main() -> None:
             save_checkpoint(best_ckpt_path, model, optimizer, scaler, epoch, args)
 
     wandb.finish()
-    save_checkpoint(args.checkpoint_dir / "checkpoint_final.pt", model, optimizer, scaler, args.epochs, args)
+    save_checkpoint(
+        args.checkpoint_dir / "checkpoint_final.pt", model, optimizer, scaler, args.epochs, args
+    )
 
 
 if __name__ == "__main__":

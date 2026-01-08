@@ -34,4 +34,5 @@ srun python train/train_ssm.py \
     --wandb-mode online \
     --num-workers 4 \
     --image-size 224 \
-    --checkpoint-dir /scratch/dinesh/checkpoints
+    --checkpoint-dir /scratch/dinesh/checkpoints \
+    --use-sampler

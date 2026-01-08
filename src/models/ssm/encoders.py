@@ -1,13 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Required, Tuple
+from typing import Callable, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torchvision.models import ResNet50_Weights, resnet50
-
-from src.models.ssm.decoders import AbstractSSMDecoder
 
 
 class AbstractSSMEncoder(nn.Module, ABC):
@@ -41,6 +39,8 @@ class ResNetEncoder(AbstractSSMEncoder):
         if freeze_resnet:
             for param in self.resnetModel.parameters():
                 param.requires_grad = False
+            # Keep BatchNorm statistics frozen too.
+            self.resnetModel.eval()
 
         # Final layer to encode into the state tensor
         self.linear_layer = nn.Linear(
