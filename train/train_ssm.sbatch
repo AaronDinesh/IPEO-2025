@@ -5,7 +5,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --qos=env540
+#SBATCH --qos=normal
 #SBATCH --account=env540
 #SBATCH --output=slurm_logs/train_ssm_%j.out
 #SBATCH --error=slurm_logs/train_ssm_%j.err
@@ -15,12 +15,10 @@ module load gcc cuda python
 
 source .venv/bin/activate
 
-mkdir -p slurm_logs
-
 DATA_ROOT=${DATA_ROOT:-data}
 
 srun python train/train_ssm.py \
-    --data-root "/scratch/dinesh/geoplant" \
+    --data-root "/scratch/izar/dinesh/geoplant" \
     --species-count 342 \
     --state-dim 256 \
     --batch-size 8 \
@@ -34,5 +32,5 @@ srun python train/train_ssm.py \
     --wandb-mode online \
     --num-workers 4 \
     --image-size 224 \
-    --checkpoint-dir /scratch/dinesh/checkpoints \
     --use-sampler
+    --checkpoint-dir "/scratch/izar/dinesh/checkpoints"
