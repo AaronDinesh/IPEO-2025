@@ -31,5 +31,6 @@ srun python train/train_ssm.py \
     --focal-gamma 2.0 \
     --wandb-mode online \
     --num-workers 4 \
+    --species-vocab "/scratch/izar/dinesh/geoplant/species_vocab.json" \
     --image-size 224 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints"
