@@ -15,7 +15,7 @@ module load gcc cuda python
 
 source .venv/bin/activate
 
-DATA_ROOT=${DATA_ROOT:-data}
+RUN_NAME=$1
 
 srun python train/train_ssm.py \
     --data-root "/scratch/izar/dinesh/geoplant" \
@@ -29,4 +29,5 @@ srun python train/train_ssm.py \
     --num-workers 4 \
     --image-size 224 \
     --use-sampler \
-    --checkpoint-dir "/scratch/izar/dinesh/checkpoints"
+    --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
+    --run-name=$1

@@ -410,6 +410,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", type=str, default="geo-plant-ssm")
     parser.add_argument("--entity", type=str, default="aarondinesh2002-epfl")
     parser.add_argument("--wandb-mode", type=str, choices=["online", "offline", "disabled"], default="online")
+    parser.add_argument("--run-name", type=str, default=None, help="Optional human-friendly run name for wandb.")
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument(
