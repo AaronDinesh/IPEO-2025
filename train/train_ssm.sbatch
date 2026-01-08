@@ -19,18 +19,14 @@ DATA_ROOT=${DATA_ROOT:-data}
 
 srun python train/train_ssm.py \
     --data-root "/scratch/izar/dinesh/geoplant" \
-    --species-count 342 \
     --state-dim 256 \
     --batch-size 8 \
     --epochs 30 \
     --lr 1e-4 \
     --val-ratio 0.2 \
     --lambda-reg 0.05 \
-    --pos-weight-cap 50.0 \
-    --cb-beta 0.999 \
-    --focal-gamma 2.0 \
     --wandb-mode online \
     --num-workers 4 \
     --image-size 224 \
-    --use-sampler
+    --use-sampler \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints"
