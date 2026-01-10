@@ -13,6 +13,7 @@ dependencies = [
     "tqdm>=4.66.5",
     "wandb>=0.18.5",
     "python-dotenv>=1.0.1",
+    "line-profiler>=5.0.0",
 ]
 
 [[tool.uv.index]]
