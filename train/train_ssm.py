@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import numpy as np
 import torch
@@ -129,6 +130,11 @@ def main(args):
             config=wandb_config,
         )
         wandb.watch(model, log="all", log_freq=50)
+
+    best_metric = float("-inf")
+    best_path = None
+    if args.checkpoint_dir is not None:
+        os.makedirs(args.checkpoint_dir, exist_ok=True)
 
     def precision_at_k(probs: torch.Tensor, labels: torch.Tensor, k: int) -> float:
         k = min(k, probs.shape[1])
@@ -301,6 +307,36 @@ def main(args):
             log_payload["epoch"] = epoch + 1
             wandb.log(log_payload, step=epoch + 1)
 
+        # Checkpointing
+        if args.checkpoint_dir is not None:
+            metric_key = args.metric_for_best
+            current_metric = test_stats.get(metric_key.split("/", 1)[-1], float("-inf"))
+            # Also allow full key lookup (train/..., test/...)
+            if metric_key in test_stats:
+                current_metric = test_stats[metric_key]
+            elif metric_key in train_stats:
+                current_metric = train_stats[metric_key]
+            is_best = current_metric > best_metric
+            if is_best:
+                best_metric = current_metric
+            if is_best or (args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0):
+                ckpt = {
+                    "epoch": epoch + 1,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "train_stats": train_stats,
+                    "test_stats": test_stats,
+                    "best_metric": best_metric,
+                    "metric_key": metric_key,
+                }
+                fname = f"epoch{epoch + 1}_{'best' if is_best else 'ckpt'}.pt"
+                ckpt_path = os.path.join(args.checkpoint_dir, fname)
+                torch.save(ckpt, ckpt_path)
+                if is_best:
+                    best_path = ckpt_path
+                if wandb_run is not None:
+                    wandb.save(ckpt_path)
+
     if wandb_run is not None:
         wandb_run.finish()
 
@@ -327,5 +363,8 @@ if __name__ == "__main__":
     parser.add_argument("--wandb-run-name", type=str, default=None, help="Weights & Biases run name")
     parser.add_argument("--wandb-group", type=str, default=None, help="Weights & Biases group name")
     parser.add_argument("--wandb-tags", type=str, default=None, help="Comma-separated tags for Weights & Biases")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Directory to save model checkpoints")
+    parser.add_argument("--checkpoint-every", type=int, default=0, help="Save checkpoint every N epochs (0 disables periodic checkpoints)")
+    parser.add_argument("--metric-for-best", type=str, default="test/auprc_micro", help="Metric key used to track best model")
     # fmt: on
     main(parser.parse_args())
