@@ -364,7 +364,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb-group", type=str, default=None, help="Weights & Biases group name")
     parser.add_argument("--wandb-tags", type=str, default=None, help="Comma-separated tags for Weights & Biases")
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Directory to save model checkpoints")
-    parser.add_argument("--checkpoint-every", type=int, default=0, help="Save checkpoint every N epochs (0 disables periodic checkpoints)")
+    parser.add_argument("--checkpoint-every", type=int, default=5, help="Save checkpoint every N epochs (0 disables periodic checkpoints)")
     parser.add_argument("--metric-for-best", type=str, default="test/auprc_micro", help="Metric key used to track best model")
     # fmt: on
     main(parser.parse_args())
