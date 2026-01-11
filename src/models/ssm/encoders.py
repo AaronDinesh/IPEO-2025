@@ -48,6 +48,16 @@ class ResNetEncoder(AbstractSSMEncoder):
             out_features=self.state_space_dim,
         )
 
+    def train(self, mode: bool = True):
+        # Let this module follow the requested mode (so your head behaves normally)
+        super().train(mode)
+
+        # But if the backbone is frozen, keep it in eval regardless
+        if self.freeze_resnet:
+            self.resnetModel.eval()
+
+        return self
+
     def forward(self, state: Tensor, input: Tensor) -> Tensor:
         # Compute the image features
         x = self.resnetModel(input)
@@ -136,6 +146,7 @@ class RNNEncoder(AbstractSSMEncoder):
 
         return h_n[-1]
 
+
 class LSTMEncoder(AbstractSSMEncoder):
     def __init__(
         self,
@@ -148,12 +159,18 @@ class LSTMEncoder(AbstractSSMEncoder):
 
         self.activation = activation
 
-        dim_layers = [in_features] + list(hidden_layers) + [self.state_space_dim,]
+        dim_layers = (
+            [in_features]
+            + list(hidden_layers)
+            + [
+                self.state_space_dim,
+            ]
+        )
 
         self.layers = nn.ModuleList()
         for i, (inDim, outDim) in enumerate(zip(dim_layers, dim_layers[1:])):
             # The state is concatenated to the input of the last layer
-            if i == len(dim_layers)-2:
+            if i == len(dim_layers) - 2:
                 self.layers.append(nn.LSTM(inDim + self.state_space_dim, outDim, batch_first=True))
             else:
                 self.layers.append(nn.LSTM(inDim, outDim, batch_first=True))

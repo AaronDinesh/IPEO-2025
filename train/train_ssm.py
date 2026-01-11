@@ -12,6 +12,8 @@ from sklearn.metrics import (
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from torchvision.models import ResNet50_Weights
+
 
 try:
     import wandb
@@ -22,7 +24,7 @@ from src.models.ssm.ssm import StateSpaceModel
 
 
 class IPEODataset(Dataset):
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, img_transform=None):
         self.filename = filename
         npz_file = np.load(self.filename)
         self.env_vars = npz_file["env"]
@@ -32,6 +34,7 @@ class IPEODataset(Dataset):
         self.dataset_size = self.labels.shape[0]
         self.num_species = self.labels.shape[1]
         self.env_dim = self.env_vars.shape[1]
+        self.img_transform = img_transform
         # Expect shape (batch, time, channels); use last dim as feature size.
         self.landsat_channels = self.landsat_timeseries.shape[-1]
         del npz_file
@@ -54,7 +57,7 @@ class IPEODataset(Dataset):
     def __getitem__(self, idx: int):
         env_var = self.env_vars[idx, :]
         landsat_data = self.landsat_timeseries[idx, :]
-        image_data = self.images[idx, :]
+        image_data = self.images[idx, :] if self.img_transform is None else self.img_transform(self.images[idx, :])
         label = self.labels[idx, :]
 
         return ({"env": env_var, "landsat": landsat_data, "images": image_data}, label)
@@ -62,8 +65,8 @@ class IPEODataset(Dataset):
 
 def main(args):
     load_dotenv()
-    training_dataset = IPEODataset(args.train)
-    testing_dataset = IPEODataset(args.test)
+    training_dataset = IPEODataset(args.train, ResNet50_Weights.DEFAULT.transforms)
+    testing_dataset = IPEODataset(args.test, ResNet50_Weights.DEFAULT.transforms)
 
     train_loader = DataLoader(training_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(testing_dataset, batch_size=args.batch_size, shuffle=True)
