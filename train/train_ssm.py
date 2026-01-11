@@ -85,9 +85,7 @@ class IPEODataset(Dataset):
 
 def main(args):
     load_dotenv()
-    requests.post(
-        "https://ntfy.sh/FooyayEngineer", data="Starting Training".encode(encoding="utf-8")
-    )
+
     training_dataset = IPEODataset(args.train, ResNet50_Weights.DEFAULT.transforms())
     testing_dataset = IPEODataset(args.test, ResNet50_Weights.DEFAULT.transforms())
 
@@ -122,6 +120,7 @@ def main(args):
     criterion = BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
     wandb_run = None
+    run_name = args.wandb_run_name
 
     if args.wandb:
         if wandb is None:
@@ -154,12 +153,23 @@ def main(args):
             tags=tags,
             config=wandb_config,
         )
+        # Prefer explicit CLI name, otherwise use the auto-generated one from wandb.
+        run_name = run_name or wandb_run.name
         wandb.watch(model, log="all", log_freq=50)
+
+    requests.post(
+        "https://ntfy.sh/FooyayEngineer",
+        data=f"Started Training {wandb_run.name or args.wandb_run_name}".encode(encoding="utf-8"),
+    )
 
     best_metric = float("-inf")
     best_path = None
+    checkpoint_dir = None
     if args.checkpoint_dir is not None:
-        os.makedirs(args.checkpoint_dir, exist_ok=True)
+        checkpoint_dir = os.path.join(
+            args.checkpoint_dir, run_name or (wandb_run.name if wandb_run is not None else "run")
+        )
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
     def precision_at_k(probs: torch.Tensor, labels: torch.Tensor, k: int) -> float:
         k = min(k, probs.shape[1])
@@ -333,7 +343,7 @@ def main(args):
             wandb.log(log_payload, step=epoch + 1)
 
         # Checkpointing
-        if args.checkpoint_dir is not None:
+        if checkpoint_dir is not None:
             metric_key = args.metric_for_best
             current_metric = test_stats.get(metric_key.split("/", 1)[-1], float("-inf"))
             # Also allow full key lookup (train/..., test/...)
@@ -355,12 +365,17 @@ def main(args):
                     "metric_key": metric_key,
                 }
                 fname = f"epoch{epoch + 1}_{'best' if is_best else 'ckpt'}.pt"
-                ckpt_path = os.path.join(args.checkpoint_dir, fname)
+                ckpt_path = os.path.join(checkpoint_dir, fname)
                 torch.save(ckpt, ckpt_path)
                 if is_best:
                     best_path = ckpt_path
                 if wandb_run is not None:
                     wandb.save(ckpt_path)
+
+    requests.post(
+        "https://ntfy.sh/FooyayEngineer",
+        data=f"Finished Training {wandb_run.name or args.wandb_run_name}".encode(encoding="utf-8"),
+    )
 
     if wandb_run is not None:
         wandb_run.finish()
