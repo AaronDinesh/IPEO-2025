@@ -35,7 +35,7 @@ class ResNetEncoder(AbstractSSMEncoder):
         self.activation_func = activation_func
         # Removing the Final Linear Classification Layer
         self.resnetModel.fc = nn.Identity()  # pyright: ignore[reportAttributeAccessIssue]
-
+        self.freeze_resnet = freeze_resnet
         if freeze_resnet:
             for param in self.resnetModel.parameters():
                 param.requires_grad = False

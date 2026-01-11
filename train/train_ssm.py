@@ -4,6 +4,7 @@ import os
 import numpy as np
 import torch
 from dotenv import load_dotenv
+from PIL import Image
 from sklearn.metrics import (
     average_precision_score,
     precision_recall_fscore_support,
@@ -11,9 +12,8 @@ from sklearn.metrics import (
 )
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 from torchvision.models import ResNet50_Weights
-
+from tqdm import tqdm
 
 try:
     import wandb
@@ -42,8 +42,13 @@ class IPEODataset(Dataset):
     def __len__(self):
         return self.dataset_size
 
-    def compute_weights_for_loss(self):
-        return (self.labels == 0.0).sum(axis=0) / self.labels.sum(axis=0)
+    def compute_weights_for_loss(self, eps: float = 1e-6):
+        pos = self.labels.sum(axis=0)
+        neg = (self.labels == 0.0).sum(axis=0)
+        w = neg / (pos + eps)
+        # If a class has 0 positives in train, avoid insane weight
+        w = np.where(pos > 0, w, 0.0)
+        return w
 
     def get_num_species(self):
         return self.num_species
@@ -55,18 +60,32 @@ class IPEODataset(Dataset):
         return self.landsat_channels
 
     def __getitem__(self, idx: int):
-        env_var = self.env_vars[idx, :]
-        landsat_data = self.landsat_timeseries[idx, :]
-        image_data = self.images[idx, :] if self.img_transform is None else self.img_transform(self.images[idx, :])
-        label = self.labels[idx, :]
+        env_var = torch.as_tensor(self.env_vars[idx], dtype=torch.float32)
+        landsat_data = torch.as_tensor(self.landsat_timeseries[idx], dtype=torch.float32)
+        label = torch.as_tensor(self.labels[idx], dtype=torch.float32)
+
+        img_chw = self.images[idx]  # (C, H, W), uint8
+
+        # CHW -> HWC for PIL
+        img_hwc = np.transpose(img_chw, (1, 2, 0))
+
+        # Ensure 3 channels (ResNet expects RGB)
+        if img_hwc.shape[-1] == 1:
+            img_hwc = np.repeat(img_hwc, 3, axis=-1)
+        elif img_hwc.shape[-1] > 3:
+            img_hwc = img_hwc[..., :3]  # choose correct bands if not RGB
+
+        img_pil = Image.fromarray(img_hwc)
+
+        image_data = self.img_transform(img_pil) if self.img_transform is not None else img_pil
 
         return ({"env": env_var, "landsat": landsat_data, "images": image_data}, label)
 
 
 def main(args):
     load_dotenv()
-    training_dataset = IPEODataset(args.train, ResNet50_Weights.DEFAULT.transforms)
-    testing_dataset = IPEODataset(args.test, ResNet50_Weights.DEFAULT.transforms)
+    training_dataset = IPEODataset(args.train, ResNet50_Weights.DEFAULT.transforms())
+    testing_dataset = IPEODataset(args.test, ResNet50_Weights.DEFAULT.transforms())
 
     train_loader = DataLoader(training_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(testing_dataset, batch_size=args.batch_size, shuffle=True)
