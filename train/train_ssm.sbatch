@@ -22,11 +22,11 @@ srun python train/train_ssm.py \
     --train "/scratch/izar/dinesh/geoplant/training_set.npz" \
     --test "/scratch/izar/dinesh/geoplant/validation_set.npz" \
     --state-space-dim 64 \
-    --batch-size 128 \
-    --epochs 400 \
+    --batch-size 64 \
+    --epochs 200 \
     --learning-rate 1e-3 \
     --wandb \
-    --threshold 0.6 \
+    --threshold 0.85 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
     --wandb-run-name=$1 \
     --state-change-reg-weight 0.01 \

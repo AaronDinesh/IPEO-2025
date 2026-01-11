@@ -24,55 +24,6 @@ except ImportError:  # pragma: no cover - optional dependency
 from src.models.ssm.ssm import StateSpaceModel
 
 
-def asym_loss(
-    logits,
-    targets,
-    pos_weight=None,
-    gamma_pos=0.0,
-    gamma_neg=4.0,
-    clip=0.05,
-    reduction="mean",
-    eps=1e-8,
-):
-
-    y = targets.float()
-    p = torch.sigmoid(logits)
-
-    # ASL clipping of negative probs
-    if clip is not None and clip > 0:
-        p_clipped = torch.where(y < 0.5, torch.clamp(p + clip, max=1.0), p)
-    else:
-        p_clipped = p
-
-    log_p = torch.log(p.clamp(min=eps))
-    log_1mp = torch.log((1.0 - p_clipped).clamp(min=eps))
-
-    # focal/asymmetric focusing factors
-    w_pos = (1.0 - p).clamp(min=eps).pow(gamma_pos)
-    w_neg = p_clipped.clamp(min=eps).pow(gamma_neg)
-
-    # reweight positives by pos_weight
-    if pos_weight is not None:
-        if pos_weight.ndim == 1:
-            pos_w = pos_weight.view(1, -1)
-        else:
-            pos_w = pos_weight
-    else:
-        pos_w = 1.0
-
-    # combined loss
-    loss_pos = -pos_w * y * w_pos * log_p
-    loss_neg = -(1.0 - y) * w_neg * log_1mp
-    loss = loss_pos + loss_neg
-
-    if reduction == "mean":
-        return loss.mean()
-    elif reduction == "sum":
-        return loss.sum()
-    else:
-        return loss
-
-
 class IPEODataset(Dataset):
     def __init__(self, filename: str, img_transform=None):
         self.filename = filename
@@ -220,6 +171,50 @@ def main(args):
         )
         os.makedirs(checkpoint_dir, exist_ok=True)
 
+    def asym_loss_func(
+        logits,
+        targets,
+        pos_weight=None,
+        gamma_pos=0.0,
+        gamma_neg=4.0,
+        clip=0.05,
+        reduction="mean",
+        eps=1e-8,
+    ):
+        y = targets.float()
+        p = torch.sigmoid(logits)
+
+        # ASL clipping for negatives (only affects the negative term)
+        if clip is not None and clip > 0:
+            p_neg = torch.clamp(p + clip, max=1.0)
+            p_clipped = torch.where(y < 0.5, p_neg, p)
+        else:
+            p_clipped = p
+
+        # logs
+        log_p = torch.log(p.clamp(min=eps))  # positives use original p
+        log_1mp = torch.log((1.0 - p_clipped).clamp(min=eps))  # negatives use clipped p
+
+        # focusing factors
+        w_pos = (1.0 - p).clamp(min=eps).pow(gamma_pos)
+        w_neg = p_clipped.clamp(min=eps).pow(gamma_neg)
+
+        # optional positive reweighting
+        if pos_weight is not None:
+            pos_w = pos_weight.view(1, -1) if pos_weight.ndim == 1 else pos_weight
+        else:
+            pos_w = 1.0
+
+        loss_pos = -pos_w * y * w_pos * log_p
+        loss_neg = -(1.0 - y) * w_neg * log_1mp
+        loss = loss_pos + loss_neg
+
+        if reduction == "mean":
+            return loss.mean()
+        elif reduction == "sum":
+            return loss.sum()
+            return loss
+
     def precision_at_k(probs: torch.Tensor, labels: torch.Tensor, k: int) -> float:
         k = min(k, probs.shape[1])
         topk_idx = torch.topk(probs, k, dim=1).indices
@@ -297,7 +292,7 @@ def main(args):
             with torch.set_grad_enabled(train):
                 outputs = model(env=env, ts=ts, img=img)
                 logits = outputs.logits[-1]  # use final step prediction
-                asym_loss = asym_loss(logits, labels)
+                asym_loss = asym_loss_func(logits, labels)
                 # Penalize overly large state transitions beyond a threshold.
                 initial_state = model.state_init.expand(env.shape[0], -1)
                 all_states = [initial_state] + outputs.states
@@ -340,7 +335,7 @@ def main(args):
         if train and not calc_metrics:
             return {
                 "loss": avg_loss,
-                "asym_loss": cls_avg,
+                "asym_loss": asym_avg,
                 "state_reg_loss": reg_avg,
                 "state_change_penalty": state_penalty_avg,
             }
@@ -348,7 +343,7 @@ def main(args):
         all_labels = torch.cat(collected_labels) if collected_labels else torch.empty(0)
         metrics = {
             "loss": avg_loss,
-            "cls_loss": cls_avg,
+            "asym_loss": asym_avg,
             "state_reg_loss": reg_avg,
             "state_change_penalty": state_penalty_avg,
         }
