@@ -21,11 +21,13 @@ RUN_NAME=$1
 srun python train/train_ssm.py \
     --train "/scratch/izar/dinesh/geoplant/training_set.npz" \
     --test "/scratch/izar/dinesh/geoplant/validation_set.npz" \
-    --state-space-dim 32 \
+    --state-space-dim 64 \
     --batch-size 128 \
-    --epochs 200 \
-    --learning-rate 1e-4 \
+    --epochs 400 \
+    --learning-rate 1e-3 \
     --wandb \
-    --threshold 0.8 \
+    --threshold 0.6 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
-    --wandb-run-name=$1
+    --wandb-run-name=$1 \
+    --state-change-reg-weight = 0.1 \
+    --reg-loss-weight = 0.1 \
