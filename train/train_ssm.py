@@ -377,7 +377,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for classification metrics")
     parser.add_argument("--precision-at-k", type=int, default=5, help="k used for precision@k")
     parser.add_argument("--state-change-threshold", type=float, default=1.0, help="Threshold for state change magnitude before penalty applies")
-    parser.add_argument("--state-change-reg-weight", type=float, default=0.1, help="Weight for the state change penalty term")
+    parser.add_argument("--state-change-reg-weight", type=float, default=0.0, help="Weight for the state change penalty term")
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--wandb-project", type=str, default="ssm-training", help="Weights & Biases project name")
     parser.add_argument("--wandb-entity", type=str, default="aarondinesh2002-epfl", help="Weights & Biases entity/user")

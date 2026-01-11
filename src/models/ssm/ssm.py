@@ -41,7 +41,7 @@ class StateSpaceModel(nn.Module):
         self.env_encoder = MLPEncoder(
             state_space_dim=state_dim,
             in_features=env_dim,
-            hidden_layers=4,
+            hidden_layers=2,
             hidden_layer_dim=state_dim,
         )
         self.ts_encoder = RNNEncoder(
