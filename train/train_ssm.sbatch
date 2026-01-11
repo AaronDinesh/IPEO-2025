@@ -26,5 +26,6 @@ srun python train/train_ssm.py \
     --epochs 200 \
     --learning-rate 1e-4 \
     --wandb \
+    --threshold 0.8 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
     --wandb-run-name=$1
