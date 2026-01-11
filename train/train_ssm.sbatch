@@ -13,6 +13,7 @@
 module purge
 module load gcc cuda python
 
+export PYTHONPATH="/home/dinesh/IPEO-2025:$PYTHONPATH"
 source .venv/bin/activate
 
 RUN_NAME=$1
@@ -23,7 +24,7 @@ srun python train/train_ssm.py \
     --state-space-dim 256 \
     --batch-size 64 \
     --epochs 200 \
-    --lr 1e-3 \
+    --learning-rate 1e-3 \
     --wandb \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
     --wandb-run-name=$1

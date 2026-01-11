@@ -4,7 +4,6 @@ import os
 import numpy as np
 import torch
 from dotenv import load_dotenv
-from line_profiler import profile
 from sklearn.metrics import (
     average_precision_score,
     precision_recall_fscore_support,
