@@ -24,6 +24,55 @@ except ImportError:  # pragma: no cover - optional dependency
 from src.models.ssm.ssm import StateSpaceModel
 
 
+def asym_loss(
+    logits,
+    targets,
+    pos_weight=None,
+    gamma_pos=0.0,
+    gamma_neg=4.0,
+    clip=0.05,
+    reduction="mean",
+    eps=1e-8,
+):
+
+    y = targets.float()
+    p = torch.sigmoid(logits)
+
+    # ASL clipping of negative probs
+    if clip is not None and clip > 0:
+        p_clipped = torch.where(y < 0.5, torch.clamp(p + clip, max=1.0), p)
+    else:
+        p_clipped = p
+
+    log_p = torch.log(p.clamp(min=eps))
+    log_1mp = torch.log((1.0 - p_clipped).clamp(min=eps))
+
+    # focal/asymmetric focusing factors
+    w_pos = (1.0 - p).clamp(min=eps).pow(gamma_pos)
+    w_neg = p_clipped.clamp(min=eps).pow(gamma_neg)
+
+    # reweight positives by pos_weight
+    if pos_weight is not None:
+        if pos_weight.ndim == 1:
+            pos_w = pos_weight.view(1, -1)
+        else:
+            pos_w = pos_weight
+    else:
+        pos_w = 1.0
+
+    # combined loss
+    loss_pos = -pos_w * y * w_pos * log_p
+    loss_neg = -(1.0 - y) * w_neg * log_1mp
+    loss = loss_pos + loss_neg
+
+    if reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    else:
+        return loss
+
+
 class IPEODataset(Dataset):
     def __init__(self, filename: str, img_transform=None):
         self.filename = filename
@@ -117,7 +166,7 @@ def main(args):
     pos_weight = torch.tensor(
         training_dataset.compute_weights_for_loss(), device=device, dtype=torch.float32
     )
-    criterion = BCEWithLogitsLoss(pos_weight=pos_weight)
+    # criterion = BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
     wandb_run = None
     run_name = args.wandb_run_name
@@ -222,7 +271,7 @@ def main(args):
 
     def run_epoch(loader, train: bool, calc_metrics: bool):
         epoch_loss = 0.0
-        cls_loss_sum = 0.0
+        asym_loss_sum = 0.0
         reg_loss_sum = 0.0
         state_penalty_sum = 0.0
         num_examples = 0
@@ -248,7 +297,7 @@ def main(args):
             with torch.set_grad_enabled(train):
                 outputs = model(env=env, ts=ts, img=img)
                 logits = outputs.logits[-1]  # use final step prediction
-                cls_loss = criterion(logits, labels)
+                asym_loss = asym_loss(logits, labels)
                 # Penalize overly large state transitions beyond a threshold.
                 initial_state = model.state_init.expand(env.shape[0], -1)
                 all_states = [initial_state] + outputs.states
@@ -264,7 +313,7 @@ def main(args):
                     state_change_penalty = torch.tensor(0.0, device=device)
 
                 loss = (
-                    cls_loss
+                    asym_loss
                     + args.reg_loss_weight * outputs.reg_loss
                     + args.state_change_reg_weight * state_change_penalty
                 )
@@ -275,7 +324,7 @@ def main(args):
 
             batch_size = labels.shape[0]
             epoch_loss += loss.item() * batch_size
-            cls_loss_sum += cls_loss.item() * batch_size
+            asym_loss_sum += asym_loss.item() * batch_size
             reg_loss_sum += outputs.reg_loss.item() * batch_size
             state_penalty_sum += state_change_penalty.item() * batch_size
             num_examples += batch_size
@@ -285,13 +334,13 @@ def main(args):
                 collected_labels.append(labels.detach().cpu())
 
         avg_loss = epoch_loss / max(num_examples, 1)
-        cls_avg = cls_loss_sum / max(num_examples, 1)
+        asym_avg = asym_loss_sum / max(num_examples, 1)
         reg_avg = reg_loss_sum / max(num_examples, 1)
         state_penalty_avg = state_penalty_sum / max(num_examples, 1)
         if train and not calc_metrics:
             return {
                 "loss": avg_loss,
-                "cls_loss": cls_avg,
+                "asym_loss": cls_avg,
                 "state_reg_loss": reg_avg,
                 "state_change_penalty": state_penalty_avg,
             }
