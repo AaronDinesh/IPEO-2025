@@ -29,5 +29,5 @@ srun python train/train_ssm.py \
     --threshold 0.6 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
     --wandb-run-name=$1 \
-    --state-change-reg-weight = 0.1 \
-    --reg-loss-weight = 0.1 \
+    --state-change-reg-weight 0.01 \
+    --reg-loss-weight 0.01 \
