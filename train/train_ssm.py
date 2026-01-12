@@ -438,7 +438,7 @@ def run_hyperopt(args):
         "threshold": hp.uniform("threshold", 0.3, 0.7),
     }
     trials = Trials()
-    rstate = np.random.RandomState(args.hyperopt_seed)
+    rstate = np.random.default_rng(args.hyperopt_seed)
 
     def objective(space_params):
         trial_args = argparse.Namespace(**vars(args))
