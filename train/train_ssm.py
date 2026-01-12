@@ -13,6 +13,7 @@ from sklearn.metrics import (
 )
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 from torchvision.models import ResNet50_Weights
 from tqdm import tqdm
 
@@ -88,8 +89,21 @@ class IPEODataset(Dataset):
 def train_and_eval(args, run_name_override=None, disable_notifications: bool = False):
     load_dotenv()
 
-    training_dataset = IPEODataset(args.train, ResNet50_Weights.DEFAULT.transforms())
-    testing_dataset = IPEODataset(args.test, ResNet50_Weights.DEFAULT.transforms())
+    weights = ResNet50_Weights.DEFAULT
+    base_img_transform = weights.transforms()
+    train_img_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomChoice([
+            transforms.Identity(),
+            transforms.RandomRotation(degrees=(90, 90)),
+            transforms.RandomRotation(degrees=(180, 180)),
+            transforms.RandomRotation(degrees=(270, 270)),
+        ]),
+        base_img_transform,
+    ])
+    training_dataset = IPEODataset(args.train, train_img_transform)
+    testing_dataset = IPEODataset(args.test, base_img_transform)
 
     train_loader = DataLoader(training_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(testing_dataset, batch_size=args.batch_size, shuffle=True)
@@ -121,6 +135,15 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
 
     print("=" * 60)
 
+    # Prevalence of each species in the training data for prior logit adjustment.
+    train_prevalence = torch.as_tensor(
+        training_dataset.labels.mean(axis=0),
+        device=device,
+        dtype=torch.float32,
+    )
+    prevalence_clamped = torch.clamp(train_prevalence, 1e-6, 1 - 1e-6)
+    prior_logit_adjust = torch.log((1.0 - prevalence_clamped) / (prevalence_clamped + 1e-8))
+
     pos_weight = torch.tensor(
         training_dataset.compute_weights_for_loss(), device=device, dtype=torch.float32
     )
@@ -141,6 +164,7 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
             "learning_rate": args.learning_rate,
             "epochs": args.epochs,
             "threshold": args.threshold,
+            "tau": args.tau,
             "precision_at_k": args.precision_at_k,
             "state_change_threshold": args.state_change_threshold,
             "state_change_reg_weight": args.state_change_reg_weight,
@@ -263,7 +287,8 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
 
             with torch.set_grad_enabled(train):
                 outputs = model(env=env, ts=ts, img=img)
-                logits = outputs.logits[-1]  # use final step prediction
+                raw_logits = outputs.logits[-1]  # use final step prediction
+                logits = raw_logits - args.tau * prior_logit_adjust
                 bce_loss = criterion(logits, labels)
                 focal_loss = focal_loss_func(logits, labels)
                 # Penalize overly large state transitions beyond a threshold.
@@ -516,6 +541,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate used during training")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs used during training")
     parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for classification metrics")
+    parser.add_argument("--tau", type=float, default=1.0, help="Strength of prior logit adjustment (recommended 0.5-2.0)")
     parser.add_argument("--precision-at-k", type=int, default=5, help="k used for precision@k")
     parser.add_argument("--state-change-threshold", type=float, default=1.0, help="Threshold for state change magnitude before penalty applies")
     parser.add_argument("--state-change-reg-weight", type=float, default=0.1, help="Weight for the state change penalty term")

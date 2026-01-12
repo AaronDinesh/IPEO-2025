@@ -24,10 +24,12 @@ srun python train/train_ssm.py \
     --state-space-dim 64 \
     --batch-size 64 \
     --epochs 200 \
-    --learning-rate 1e-3 \
+    --learning-rate 3e-4 \
     --wandb \
-    --threshold 0.85 \
+    --threshold 0.42016854191620334 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
     --wandb-run-name=$1 \
-    --state-change-reg-weight 0.01 \
+    --state-change-reg-weight 0.860930481913434 \
+    --state-change-threshold 1.4123737432567047 \
     --reg-loss-weight 0.01 \
+    --wandb-group "single-runs" \

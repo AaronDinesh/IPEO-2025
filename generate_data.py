@@ -118,7 +118,7 @@ print(images_final.shape)
 # Load labels
 labels = np.load("data/species_data_training.npy")
 print(labels.shape)
-print(labels[0])
+print(labels.sum(axis=0))
 
 # # Save files
 # np.savez(
