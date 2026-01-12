@@ -120,9 +120,7 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
 
     testing_dataset = IPEODataset(args.test, base_img_transform)
 
-    train_loader = DataLoader(
-        training_dataset, batch_size=args.batch_size, sampler=sampler, shuffle=True
-    )
+    train_loader = DataLoader(training_dataset, batch_size=args.batch_size, sampler=sampler)
     test_loader = DataLoader(testing_dataset, batch_size=args.batch_size, shuffle=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
