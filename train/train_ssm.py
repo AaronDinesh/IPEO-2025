@@ -85,7 +85,7 @@ class IPEODataset(Dataset):
         return ({"env": env_var, "landsat": landsat_data, "images": image_data}, label)
 
 
-def main(args):
+def train_and_eval(args, run_name_override=None, disable_notifications: bool = False):
     load_dotenv()
 
     training_dataset = IPEODataset(args.train, ResNet50_Weights.DEFAULT.transforms())
@@ -104,6 +104,11 @@ def main(args):
         img_freeze_backbone=True,
     )
     model.to(device)
+    if args.torch_compile:
+        try:
+            model = torch.compile(model)
+        except Exception as exc:  # pragma: no cover - optional acceleration
+            print(f"torch.compile failed ({exc}); continuing without compile.")
 
     print("=" * 60)
     print("Model Parameters")
@@ -122,7 +127,7 @@ def main(args):
     criterion = BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
     wandb_run = None
-    run_name = args.wandb_run_name
+    run_name = run_name_override or args.wandb_run_name
 
     if args.wandb:
         if wandb is None:
@@ -139,6 +144,7 @@ def main(args):
             "precision_at_k": args.precision_at_k,
             "state_change_threshold": args.state_change_threshold,
             "state_change_reg_weight": args.state_change_reg_weight,
+            "torch_compile": args.torch_compile,
             "device": str(device),
             "num_species": training_dataset.get_num_species(),
             "env_dim": training_dataset.get_env_dim(),
@@ -150,7 +156,7 @@ def main(args):
         wandb_run = wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
-            name=args.wandb_run_name,
+            name=run_name_override or args.wandb_run_name,
             group=args.wandb_group,
             tags=tags,
             config=wandb_config,
@@ -159,18 +165,18 @@ def main(args):
         run_name = run_name or wandb_run.name
         wandb.watch(model, log="all", log_freq=50)
 
-    requests.post(
-        "https://ntfy.sh/FooyayEngineer",
-        data=f"Started Training {wandb_run.name or args.wandb_run_name}".encode(encoding="utf-8"),
-    )
+    run_label = run_name or (wandb_run.name if wandb_run is not None else args.wandb_run_name)
+    if not disable_notifications:
+        requests.post(
+            "https://ntfy.sh/FooyayEngineer",
+            data=f"Started Training {run_label or 'run'}".encode(encoding="utf-8"),
+        )
 
     best_metric = float("-inf")
     best_path = None
     checkpoint_dir = None
     if args.checkpoint_dir is not None:
-        checkpoint_dir = os.path.join(
-            args.checkpoint_dir, run_name or (wandb_run.name if wandb_run is not None else "run")
-        )
+        checkpoint_dir = os.path.join(args.checkpoint_dir, run_label or "run")
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     def precision_at_k(probs: torch.Tensor, labels: torch.Tensor, k: int) -> float:
@@ -222,6 +228,8 @@ def main(args):
         metrics["precision_at_k"] = precision_at_k(probs, labels_bin, k=args.precision_at_k)
         return metrics
 
+    disable_inner_tqdm = getattr(args, "hyperopt", False)
+
     def run_epoch(loader, train: bool, calc_metrics: bool):
         epoch_loss = 0.0
         bce_loss_sum = 0.0
@@ -237,7 +245,12 @@ def main(args):
         collected_logits = []
         collected_labels = []
 
-        iterator = tqdm(loader, leave=False, desc="train" if train else "eval")
+        iterator = tqdm(
+            loader,
+            leave=False,
+            desc="train" if train else "eval",
+            disable=disable_inner_tqdm,
+        )
         for batch in iterator:
             (features, labels) = batch
             env = torch.as_tensor(features["env"], device=device, dtype=torch.float32)
@@ -316,8 +329,17 @@ def main(args):
             metrics.update(compute_metrics(all_logits, all_labels, threshold=args.threshold))
         return metrics
 
+    train_stats = {}
+    test_stats = {}
+
     ## Main Training loop
-    for epoch in tqdm(range(args.epochs), desc="Epochs", total=args.epochs, position=0):
+    for epoch in tqdm(
+        range(args.epochs),
+        desc="Epochs",
+        total=args.epochs,
+        position=0,
+        disable=disable_inner_tqdm,
+    ):
         train_stats = run_epoch(train_loader, train=True, calc_metrics=True)
         with torch.no_grad():
             test_stats = run_epoch(test_loader, train=False, calc_metrics=True)
@@ -381,13 +403,104 @@ def main(args):
                 if wandb_run is not None:
                     wandb.save(ckpt_path)
 
-    requests.post(
-        "https://ntfy.sh/FooyayEngineer",
-        data=f"Finished Training {wandb_run.name or args.wandb_run_name}".encode(encoding="utf-8"),
-    )
+    if not disable_notifications:
+        requests.post(
+            "https://ntfy.sh/FooyayEngineer",
+            data=f"Finished Training {run_label or 'run'}".encode(encoding="utf-8"),
+        )
 
     if wandb_run is not None:
         wandb_run.finish()
+
+    return {
+        "train_stats": train_stats,
+        "test_stats": test_stats,
+        "best_metric": best_metric,
+        "best_path": best_path,
+        "run_name": run_label or "run",
+    }
+
+
+def run_hyperopt(args):
+    try:
+        from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            "hyperopt is required for --hyperopt; install it or disable the flag."
+        ) from exc
+
+    space = {
+        "learning_rate": hp.loguniform("learning_rate", np.log(1e-5), np.log(5e-3)),
+        "focal_loss_weight": hp.uniform("focal_loss_weight", 0.0, 2.0),
+        "reg_loss_weight": hp.uniform("reg_loss_weight", 0.0, 0.5),
+        "state_change_reg_weight": hp.uniform("state_change_reg_weight", 0.0, 1.0),
+        "state_change_threshold": hp.uniform("state_change_threshold", 0.5, 2.0),
+        "threshold": hp.uniform("threshold", 0.3, 0.7),
+    }
+    trials = Trials()
+    rstate = np.random.RandomState(args.hyperopt_seed)
+
+    def objective(space_params):
+        trial_args = argparse.Namespace(**vars(args))
+        trial_args.learning_rate = float(space_params["learning_rate"])
+        trial_args.focal_loss_weight = float(space_params["focal_loss_weight"])
+        trial_args.reg_loss_weight = float(space_params["reg_loss_weight"])
+        trial_args.state_change_reg_weight = float(space_params["state_change_reg_weight"])
+        trial_args.state_change_threshold = float(space_params["state_change_threshold"])
+        trial_args.threshold = float(space_params["threshold"])
+        trial_args.metric_for_best = args.hyperopt_metric
+        trial_run_name = f"{args.wandb_run_name or 'hyperopt'}-trial{len(trials.trials)}"
+        result = train_and_eval(
+            trial_args,
+            run_name_override=trial_run_name,
+            disable_notifications=args.hyperopt_disable_notifications,
+        )
+        metric_val = result.get("best_metric", float("-inf"))
+        loss = float("inf") if not np.isfinite(metric_val) else -float(metric_val)
+        return {
+            "loss": loss,
+            "status": STATUS_OK,
+            "metric": metric_val,
+            "params": {k: float(v) for k, v in space_params.items()},
+            "result": result,
+        }
+
+    outer = tqdm(range(args.hyperopt_max_evals), desc="hyperopt", unit="trial")
+    for _ in outer:
+        fmin(
+            fn=objective,
+            space=space,
+            algo=tpe.suggest,
+            max_evals=len(trials.trials) + 1,
+            trials=trials,
+            rstate=rstate,
+            show_progressbar=False,
+        )
+        best_loss = min(
+            (t["result"]["loss"] for t in trials.trials if np.isfinite(t["result"]["loss"])),
+            default=float("inf"),
+        )
+        best_metric = float("nan") if best_loss == float("inf") else -best_loss
+        outer.set_postfix(best_metric=best_metric)
+
+    valid_trials = [t for t in trials.trials if np.isfinite(t["result"]["loss"])]
+    if valid_trials:
+        best_trial = min(valid_trials, key=lambda t: t["result"]["loss"])
+        best_metric = best_trial["result"].get("metric", float("-inf"))
+        print(
+            f"Best {args.hyperopt_metric}: {best_metric:.4f} with params: "
+            f"{best_trial['result'].get('params')}"
+        )
+    else:
+        print("No valid Hyperopt trials completed.")
+        best_metric = float("-inf")
+    return {"best_metric": best_metric, "trials": trials}
+
+
+def main(args):
+    if args.hyperopt:
+        return run_hyperopt(args)
+    return train_and_eval(args)
 
 
 if __name__ == "__main__":
@@ -417,5 +530,11 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Directory to save model checkpoints")
     parser.add_argument("--checkpoint-every", type=int, default=5, help="Save checkpoint every N epochs (0 disables periodic checkpoints)")
     parser.add_argument("--metric-for-best", type=str, default="test/auprc_micro", help="Metric key used to track best model")
+    parser.add_argument("--hyperopt", action="store_true", help="Run Hyperopt search instead of a single training run")
+    parser.add_argument("--hyperopt-max-evals", type=int, default=10, help="Number of Hyperopt trials to run")
+    parser.add_argument("--hyperopt-metric", type=str, default="test/auprc_macro", help="Metric key to maximize during Hyperopt")
+    parser.add_argument("--hyperopt-seed", type=int, default=42, help="Random seed for Hyperopt search")
+    parser.add_argument("--hyperopt-disable-notifications", action="store_true", help="Disable ntfy notifications during Hyperopt trials")
+    parser.add_argument("--torch-compile", action="store_true", help="Compile the model with torch.compile for potential speedups")
     # fmt: on
     main(parser.parse_args())
