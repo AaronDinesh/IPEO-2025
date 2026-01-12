@@ -117,36 +117,38 @@ print(images_final.shape)
 
 # Load labels
 labels = np.load("data/species_data_training.npy")
+print(labels.shape)
+print(labels[0])
 
-# Save files
-np.savez(
-    "data/training_set.npz",
-    env=env_final,
-    landsat=landsat_final,
-    images=images_final,
-    labels=labels,
-)
+# # Save files
+# np.savez(
+#     "data/training_set.npz",
+#     env=env_final,
+#     landsat=landsat_final,
+#     images=images_final,
+#     labels=labels,
+# )
 
-# Process env data
-env = pd.read_csv("data/env_variables_test.csv")
-env_final_test, _, _ = process_env(env, mean=env_mean, std=env_std)
+# # Process env data
+# env = pd.read_csv("data/env_variables_test.csv")
+# env_final_test, _, _ = process_env(env, mean=env_mean, std=env_std)
 
-# Process timeseries
-landsat = pd.read_csv("data/landsat_timeseries_test.csv")
-landsat_final_test, _, _ = process_timeseries(landsat, mean=landsat_mean, std=landsat_std)
+# # Process timeseries
+# landsat = pd.read_csv("data/landsat_timeseries_test.csv")
+# landsat_final_test, _, _ = process_timeseries(landsat, mean=landsat_mean, std=landsat_std)
 
-# Process images
-images_final_test = np.load("data/satellite_patches_test.npy")
-# images_final_test, _, _ = process_images(images, mean=images_mean, std=images_std)
+# # Process images
+# images_final_test = np.load("data/satellite_patches_test.npy")
+# # images_final_test, _, _ = process_images(images, mean=images_mean, std=images_std)
 
-# Load labels
-labels_test = np.load("data/species_data_test.npy")
+# # Load labels
+# labels_test = np.load("data/species_data_test.npy")
 
-# Save files
-np.savez(
-    "data/validation_set.npz",
-    env=env_final_test,
-    landsat=landsat_final_test,
-    images=images_final_test,
-    labels=labels_test,
-)
+# # Save files
+# np.savez(
+#     "data/validation_set.npz",
+#     env=env_final_test,
+#     landsat=landsat_final_test,
+#     images=images_final_test,
+#     labels=labels_test,
+# )

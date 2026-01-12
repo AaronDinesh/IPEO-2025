@@ -16,6 +16,8 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.models import ResNet50_Weights
 from tqdm import tqdm
 
+from src.utils import focal_loss_func
+
 try:
     import wandb
 except ImportError:  # pragma: no cover - optional dependency
@@ -48,7 +50,7 @@ class IPEODataset(Dataset):
         neg = (self.labels == 0.0).sum(axis=0)
         w = neg / (pos + eps)
         # If a class has 0 positives in train, avoid insane weight
-        w = np.where(pos > 0, w, 0.0)
+        w = np.clip(w, 1.0, 50.0)
         return w
 
     def get_num_species(self):
@@ -117,7 +119,7 @@ def main(args):
     pos_weight = torch.tensor(
         training_dataset.compute_weights_for_loss(), device=device, dtype=torch.float32
     )
-    # criterion = BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
     wandb_run = None
     run_name = args.wandb_run_name
@@ -171,50 +173,6 @@ def main(args):
         )
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-    def asym_loss_func(
-        logits,
-        targets,
-        pos_weight=None,
-        gamma_pos=0.0,
-        gamma_neg=4.0,
-        clip=0.05,
-        reduction="mean",
-        eps=1e-8,
-    ):
-        y = targets.float()
-        p = torch.sigmoid(logits)
-
-        # ASL clipping for negatives (only affects the negative term)
-        if clip is not None and clip > 0:
-            p_neg = torch.clamp(p + clip, max=1.0)
-            p_clipped = torch.where(y < 0.5, p_neg, p)
-        else:
-            p_clipped = p
-
-        # logs
-        log_p = torch.log(p.clamp(min=eps))  # positives use original p
-        log_1mp = torch.log((1.0 - p_clipped).clamp(min=eps))  # negatives use clipped p
-
-        # focusing factors
-        w_pos = (1.0 - p).clamp(min=eps).pow(gamma_pos)
-        w_neg = p_clipped.clamp(min=eps).pow(gamma_neg)
-
-        # optional positive reweighting
-        if pos_weight is not None:
-            pos_w = pos_weight.view(1, -1) if pos_weight.ndim == 1 else pos_weight
-        else:
-            pos_w = 1.0
-
-        loss_pos = -pos_w * y * w_pos * log_p
-        loss_neg = -(1.0 - y) * w_neg * log_1mp
-        loss = loss_pos + loss_neg
-
-        if reduction == "mean":
-            return loss.mean()
-        elif reduction == "sum":
-            return loss.sum()
-            return loss
-
     def precision_at_k(probs: torch.Tensor, labels: torch.Tensor, k: int) -> float:
         k = min(k, probs.shape[1])
         topk_idx = torch.topk(probs, k, dim=1).indices
@@ -266,7 +224,8 @@ def main(args):
 
     def run_epoch(loader, train: bool, calc_metrics: bool):
         epoch_loss = 0.0
-        asym_loss_sum = 0.0
+        bce_loss_sum = 0.0
+        focal_loss_sum = 0.0
         reg_loss_sum = 0.0
         state_penalty_sum = 0.0
         num_examples = 0
@@ -292,7 +251,8 @@ def main(args):
             with torch.set_grad_enabled(train):
                 outputs = model(env=env, ts=ts, img=img)
                 logits = outputs.logits[-1]  # use final step prediction
-                asym_loss = asym_loss_func(logits, labels)
+                bce_loss = criterion(logits, labels)
+                focal_loss = focal_loss_func(logits, labels)
                 # Penalize overly large state transitions beyond a threshold.
                 initial_state = model.state_init.expand(env.shape[0], -1)
                 all_states = [initial_state] + outputs.states
@@ -308,7 +268,8 @@ def main(args):
                     state_change_penalty = torch.tensor(0.0, device=device)
 
                 loss = (
-                    asym_loss
+                    bce_loss
+                    + args.focal_loss_weight * focal_loss
                     + args.reg_loss_weight * outputs.reg_loss
                     + args.state_change_reg_weight * state_change_penalty
                 )
@@ -319,7 +280,8 @@ def main(args):
 
             batch_size = labels.shape[0]
             epoch_loss += loss.item() * batch_size
-            asym_loss_sum += asym_loss.item() * batch_size
+            bce_loss_sum += bce_loss.item() * batch_size
+            focal_loss_sum += focal_loss.item() * batch_size
             reg_loss_sum += outputs.reg_loss.item() * batch_size
             state_penalty_sum += state_change_penalty.item() * batch_size
             num_examples += batch_size
@@ -329,13 +291,15 @@ def main(args):
                 collected_labels.append(labels.detach().cpu())
 
         avg_loss = epoch_loss / max(num_examples, 1)
-        asym_avg = asym_loss_sum / max(num_examples, 1)
+        bce_avg = bce_loss_sum / max(num_examples, 1)
+        focal_avg = focal_loss_sum / max(num_examples, 1)
         reg_avg = reg_loss_sum / max(num_examples, 1)
         state_penalty_avg = state_penalty_sum / max(num_examples, 1)
         if train and not calc_metrics:
             return {
                 "loss": avg_loss,
-                "asym_loss": asym_avg,
+                "bce_loss": bce_avg,
+                "focal_loss": focal_avg,
                 "state_reg_loss": reg_avg,
                 "state_change_penalty": state_penalty_avg,
             }
@@ -343,7 +307,8 @@ def main(args):
         all_labels = torch.cat(collected_labels) if collected_labels else torch.empty(0)
         metrics = {
             "loss": avg_loss,
-            "asym_loss": asym_avg,
+            "bce_loss": bce_avg,
+            "focal_loss": focal_avg,
             "state_reg_loss": reg_avg,
             "state_change_penalty": state_penalty_avg,
         }
@@ -442,6 +407,7 @@ if __name__ == "__main__":
     parser.add_argument("--state-change-threshold", type=float, default=1.0, help="Threshold for state change magnitude before penalty applies")
     parser.add_argument("--state-change-reg-weight", type=float, default=0.1, help="Weight for the state change penalty term")
     parser.add_argument("--reg-loss-weight", type=float, default=0.1)
+    parser.add_argument("--focal-loss-weight", type=float, default=0.1)
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--wandb-project", type=str, default="ssm-training", help="Weights & Biases project name")
     parser.add_argument("--wandb-entity", type=str, default="aarondinesh2002-epfl", help="Weights & Biases entity/user")
