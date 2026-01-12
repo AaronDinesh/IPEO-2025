@@ -12,7 +12,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from torch.nn import BCEWithLogitsLoss
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from torchvision.models import ResNet50_Weights
 from tqdm import tqdm
@@ -103,9 +103,26 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
         base_img_transform,
     ])
     training_dataset = IPEODataset(args.train, train_img_transform)
+
+    Y = training_dataset.labels  # (N, C), 0/1
+    pos_counts = Y.sum(axis=0) + 1e-6
+
+    inv = 1.0 / np.sqrt(pos_counts)  # (C,)
+
+    sample_w = (Y * inv[None, :]).sum(axis=1)  # (N,)
+    sample_w = np.maximum(sample_w, 1e-3)  # avoid zero for all-negative samples
+
+    sampler = WeightedRandomSampler(
+        weights=torch.as_tensor(sample_w, dtype=torch.double),
+        num_samples=len(sample_w),
+        replacement=True,
+    )
+
     testing_dataset = IPEODataset(args.test, base_img_transform)
 
-    train_loader = DataLoader(training_dataset, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(
+        training_dataset, batch_size=args.batch_size, sampler=sampler, shuffle=True
+    )
     test_loader = DataLoader(testing_dataset, batch_size=args.batch_size, shuffle=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
