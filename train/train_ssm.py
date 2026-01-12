@@ -95,7 +95,7 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.RandomChoice([
-            transforms.Identity(),
+            transforms.Lambda(lambda x: x),  # identity
             transforms.RandomRotation(degrees=(90, 90)),
             transforms.RandomRotation(degrees=(180, 180)),
             transforms.RandomRotation(degrees=(270, 270)),
