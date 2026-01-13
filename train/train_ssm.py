@@ -202,7 +202,6 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
         )
         # Prefer explicit CLI name, otherwise use the auto-generated one from wandb.
         run_name = run_name or wandb_run.name
-        wandb.watch(model, log="all", log_freq=50)
 
     run_label = run_name or (wandb_run.name if wandb_run is not None else args.wandb_run_name)
     if not disable_notifications:

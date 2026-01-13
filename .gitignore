@@ -1,4 +1,5 @@
 # Data folder
+checkpoints/*
 data/
 slurm_logs/*
 wandb/
