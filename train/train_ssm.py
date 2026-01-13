@@ -14,7 +14,7 @@ from sklearn.metrics import (
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
-from torchvision.models import ResNet50_Weights
+from torchvision.models import ResNet18_Weights, ResNet50_Weights
 from tqdm import tqdm
 
 from src.utils import focal_loss_func
@@ -86,10 +86,19 @@ class IPEODataset(Dataset):
         return ({"env": env_var, "landsat": landsat_data, "images": image_data}, label)
 
 
+def get_resnet_weights(backbone: str):
+    backbone = backbone.lower()
+    if backbone == "resnet18":
+        return ResNet18_Weights.DEFAULT
+    if backbone == "resnet50":
+        return ResNet50_Weights.DEFAULT
+    raise ValueError(f"Unsupported image backbone '{backbone}'. Use resnet18 or resnet50.")
+
+
 def train_and_eval(args, run_name_override=None, disable_notifications: bool = False):
     load_dotenv()
 
-    weights = ResNet50_Weights.DEFAULT
+    weights = get_resnet_weights(args.image_backbone)
     base_img_transform = weights.transforms()
     train_img_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
@@ -124,6 +133,7 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
     test_loader = DataLoader(testing_dataset, batch_size=args.batch_size, shuffle=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Image backbone: {args.image_backbone}")
 
     model = StateSpaceModel(
         num_species=training_dataset.get_num_species(),
@@ -131,6 +141,7 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
         env_dim=training_dataset.get_env_dim(),
         time_series_channels=training_dataset.get_landsat_channels(),
         img_freeze_backbone=True,
+        img_backbone=args.image_backbone,
     )
     model.to(device)
     if args.torch_compile:
@@ -213,6 +224,9 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
     best_metric = float("-inf")
     best_path = None
     checkpoint_dir = None
+    best_epoch = None
+    best_train_stats = {}
+    best_test_stats = {}
     if args.checkpoint_dir is not None:
         checkpoint_dir = os.path.join(args.checkpoint_dir, run_label or "run")
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -412,35 +426,70 @@ def train_and_eval(args, run_name_override=None, disable_notifications: bool = F
             log_payload["epoch"] = epoch + 1
             wandb.log(log_payload, step=epoch + 1)
 
-        # Checkpointing
-        if checkpoint_dir is not None:
-            metric_key = args.metric_for_best
-            current_metric = test_stats.get(metric_key.split("/", 1)[-1], float("-inf"))
-            # Also allow full key lookup (train/..., test/...)
-            if metric_key in test_stats:
-                current_metric = test_stats[metric_key]
-            elif metric_key in train_stats:
-                current_metric = train_stats[metric_key]
-            is_best = current_metric > best_metric
+        metric_key = args.metric_for_best
+        current_metric = test_stats.get(metric_key.split("/", 1)[-1], float("-inf"))
+        # Also allow full key lookup (train/..., test/...)
+        if metric_key in test_stats:
+            current_metric = test_stats[metric_key]
+        elif metric_key in train_stats:
+            current_metric = train_stats[metric_key]
+        is_best = current_metric > best_metric
+        if is_best:
+            best_metric = current_metric
+            best_epoch = epoch + 1
+            best_train_stats = dict(train_stats)
+            best_test_stats = dict(test_stats)
+
+        if checkpoint_dir is not None and (
+            is_best or (args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0)
+        ):
+            ckpt = {
+                "epoch": epoch + 1,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "train_stats": train_stats,
+                "test_stats": test_stats,
+                "best_metric": best_metric,
+                "metric_key": metric_key,
+            }
+            fname = f"epoch{epoch + 1}_{'best' if is_best else 'ckpt'}.pt"
+            ckpt_path = os.path.join(checkpoint_dir, fname)
+            torch.save(ckpt, ckpt_path)
             if is_best:
-                best_metric = current_metric
-            if is_best or (args.checkpoint_every and (epoch + 1) % args.checkpoint_every == 0):
-                ckpt = {
-                    "epoch": epoch + 1,
-                    "model_state": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "train_stats": train_stats,
-                    "test_stats": test_stats,
-                    "best_metric": best_metric,
-                    "metric_key": metric_key,
-                }
-                fname = f"epoch{epoch + 1}_{'best' if is_best else 'ckpt'}.pt"
-                ckpt_path = os.path.join(checkpoint_dir, fname)
-                torch.save(ckpt, ckpt_path)
-                if is_best:
-                    best_path = ckpt_path
-                if wandb_run is not None:
-                    wandb.save(ckpt_path)
+                best_path = ckpt_path
+            if wandb_run is not None:
+                wandb.save(ckpt_path)
+
+    # Final summary
+    def _fmt(split: str, stats: dict) -> str:
+        keys = (
+            "loss",
+            "f1_micro",
+            "f1_macro",
+            "precision_micro",
+            "recall_micro",
+            "auprc_micro",
+            "auprc_macro",
+            "auroc_micro",
+            "auroc_macro",
+            "map_macro",
+            "precision_at_k",
+        )
+        parts = [split]
+        for key in keys:
+            if key in stats:
+                parts.append(f"{key}: {stats[key]:.4f}")
+        return " | ".join(parts)
+
+    print("=" * 60)
+    print("Final epoch metrics:")
+    print(_fmt("train", train_stats))
+    print(_fmt("test", test_stats))
+    if best_epoch is not None:
+        print(f"Best {args.metric_for_best} at epoch {best_epoch}: {best_metric:.4f}")
+        print(_fmt("best/train", best_train_stats))
+        print(_fmt("best/test", best_test_stats))
+    print("=" * 60)
 
     if not disable_notifications:
         requests.post(
@@ -549,6 +598,13 @@ if __name__ == "__main__":
     parser.add_argument("--train", type=str, required=True, help="Path to the training npz file")
     parser.add_argument("--test", type=str, required=True, help="Path to the testing npz file")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch Size to use during training")
+    parser.add_argument(
+        "--image-backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="CNN backbone for image encoder.",
+    )
     parser.add_argument("--state-space-dim", type=int, default=256, help="Size of the state space vector")
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning rate used during training")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs used during training")

@@ -14,7 +14,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from torchvision import transforms
-from torchvision.models import ResNet50_Weights, resnet50
+from torchvision.models import ResNet18_Weights, ResNet50_Weights, resnet18, resnet50
 from tqdm import tqdm
 
 try:
@@ -57,9 +57,16 @@ def compute_time_series_features(ts: np.ndarray) -> np.ndarray:
     return np.concatenate(feats, axis=1)
 
 
-def prepare_image_model(device: torch.device):
-    weights = ResNet50_Weights.DEFAULT
-    model = resnet50(weights=weights)
+def prepare_image_model(device: torch.device, backbone: str = "resnet50"):
+    backbone = backbone.lower()
+    if backbone == "resnet18":
+        weights = ResNet18_Weights.DEFAULT
+        model = resnet18(weights=weights)
+    elif backbone == "resnet50":
+        weights = ResNet50_Weights.DEFAULT
+        model = resnet50(weights=weights)
+    else:
+        raise ValueError(f"Unsupported image backbone '{backbone}'. Use resnet18 or resnet50.")
     model.fc = torch.nn.Identity()
     model.to(device)
     model.eval()
@@ -310,6 +317,13 @@ def main():
     parser.add_argument(
         "--image-batch-size", type=int, default=32, help="Batch size for image encoder."
     )
+    parser.add_argument(
+        "--image-backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="CNN backbone for image embeddings.",
+    )
     parser.add_argument("--no-images", action="store_true", help="Disable image embeddings.")
     parser.add_argument(
         "--save-thresholds",
@@ -345,14 +359,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_images = not args.no_images
     if use_images:
-        image_model, image_transform = prepare_image_model(device)
+        image_model, image_transform = prepare_image_model(device, backbone=args.image_backbone)
     else:
         image_model, image_transform = None, None
 
     print("Loading model...")
     clf = joblib.load(args.model)
 
-    print(f"Building features for tuning set (images={'on' if use_images else 'off'})...")
+    print(
+        f"Building features for tuning set (images={'on' if use_images else 'off'}, "
+        f"backbone={args.image_backbone})..."
+    )
     X, y = build_features(
         args.data,
         model=image_model,

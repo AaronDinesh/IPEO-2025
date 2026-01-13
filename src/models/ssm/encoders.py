@@ -5,7 +5,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torchvision.models import ResNet50_Weights, resnet50
+from torchvision.models import (
+    ResNet18_Weights,
+    ResNet50_Weights,
+    resnet18,
+    resnet50,
+)
 
 
 class AbstractSSMEncoder(nn.Module, ABC):
@@ -28,10 +33,10 @@ class ResNetEncoder(AbstractSSMEncoder):
         state_space_dim: int,
         activation_func: Callable = F.relu,
         freeze_resnet: bool = False,
+        backbone: str = "resnet50",
     ):
         super().__init__(state_space_dim)
-        self.resnetModel = resnet50(weights=ResNet50_Weights.DEFAULT)
-        self.image_feature_dim = self.resnetModel.fc.in_features
+        self.resnetModel, self.image_feature_dim = self._build_backbone(backbone)
         self.activation_func = activation_func
         # Removing the Final Linear Classification Layer
         self.resnetModel.fc = nn.Identity()  # pyright: ignore[reportAttributeAccessIssue]
@@ -67,6 +72,16 @@ class ResNetEncoder(AbstractSSMEncoder):
         x = torch.cat([x, state], dim=1)
         # Output the new state after encoding the current modality
         return self.linear_layer(x)
+
+    def _build_backbone(self, backbone: str) -> Tuple[nn.Module, int]:
+        backbone = backbone.lower()
+        if backbone == "resnet18":
+            model = resnet18(weights=ResNet18_Weights.DEFAULT)
+        elif backbone == "resnet50":
+            model = resnet50(weights=ResNet50_Weights.DEFAULT)
+        else:
+            raise ValueError(f"Unsupported image backbone '{backbone}'. Use resnet18 or resnet50.")
+        return model, model.fc.in_features
 
 
 class MLPEncoder(AbstractSSMEncoder):

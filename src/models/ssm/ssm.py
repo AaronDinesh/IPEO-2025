@@ -30,6 +30,7 @@ class StateSpaceModel(nn.Module):
         env_dim: int,
         time_series_channels: int,
         img_freeze_backbone: bool = True,
+        img_backbone: str = "resnet50",
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -52,6 +53,7 @@ class StateSpaceModel(nn.Module):
         self.img_encoder = ResNetEncoder(
             state_space_dim=state_dim,
             freeze_resnet=img_freeze_backbone,
+            backbone=img_backbone,
         )
 
         self.decoder = nn.Linear(state_dim, num_species)

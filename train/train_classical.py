@@ -20,7 +20,7 @@ from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from torchvision import transforms
-from torchvision.models import ResNet50_Weights, resnet50
+from torchvision.models import ResNet18_Weights, ResNet50_Weights, resnet18, resnet50
 from tqdm import tqdm
 
 try:
@@ -67,9 +67,18 @@ def compute_time_series_features(ts: np.ndarray) -> np.ndarray:
     return np.concatenate(channel_features, axis=1)
 
 
-def prepare_image_model(device: torch.device) -> Tuple[torch.nn.Module, transforms.Compose]:
-    weights = ResNet50_Weights.DEFAULT
-    model = resnet50(weights=weights)
+def prepare_image_model(
+    device: torch.device, backbone: str = "resnet50"
+) -> Tuple[torch.nn.Module, transforms.Compose]:
+    backbone = backbone.lower()
+    if backbone == "resnet18":
+        weights = ResNet18_Weights.DEFAULT
+        model = resnet18(weights=weights)
+    elif backbone == "resnet50":
+        weights = ResNet50_Weights.DEFAULT
+        model = resnet50(weights=weights)
+    else:
+        raise ValueError(f"Unsupported image backbone '{backbone}'. Use resnet18 or resnet50.")
     model.fc = torch.nn.Identity()
     model.to(device)
     model.eval()
@@ -84,7 +93,7 @@ def extract_image_features(
     batch_size: int,
 ) -> np.ndarray:
     """
-    Convert RGB patches into ResNet50 embeddings.
+    Convert RGB patches into ResNet embeddings.
     images shape: (num_samples, C, H, W) or (num_samples, H, W, C).
     Returns array of shape (num_samples, feature_dim).
     """
@@ -521,6 +530,13 @@ def main():
     parser.add_argument(
         "--image-batch-size", type=int, default=32, help="Batch size for image encoder."
     )
+    parser.add_argument(
+        "--image-backbone",
+        type=str,
+        default="resnet50",
+        choices=["resnet18", "resnet50"],
+        help="CNN backbone for image embeddings.",
+    )
     parser.add_argument("--no-images", action="store_true", help="Disable image embeddings.")
     parser.add_argument(
         "--c",
@@ -603,11 +619,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_images = not args.no_images
     if use_images:
-        image_model, image_transform = prepare_image_model(device)
+        image_model, image_transform = prepare_image_model(device, backbone=args.image_backbone)
     else:
         image_model, image_transform = None, None
 
-    print(f"Building features (images={'on' if use_images else 'off'}) on device {device}...")
+    print(
+        f"Building features (images={'on' if use_images else 'off'}, "
+        f"backbone={args.image_backbone}) on device {device}..."
+    )
     X_train, y_train = build_features(
         args.train,
         model=image_model,
@@ -658,6 +677,8 @@ def main():
         test_metrics = hopt_result["val_metrics"]
         print(f"Best threshold: {best_threshold:.4f}")
         print("Best params:", hopt_result["best_params"])
+        best_metric_val = test_metrics.get(args.hyperopt_metric, float("nan"))
+        print(f"Best {args.hyperopt_metric}: {best_metric_val:.4f}")
     else:
         clf = build_model(
             model_name=args.model,
