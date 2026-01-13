@@ -26,7 +26,7 @@ srun python train/train_ssm.py \
     --epochs 200 \
     --learning-rate 3e-4 \
     --wandb \
-    --wandb-group "hyperopt-ssm-auprc" \
+    --wandb-group "hyperopt-ssm-auprc-run2" \
     --wandb-run-name="${RUN_NAME}" \
     --threshold 0.42016854191620334 \
     --checkpoint-dir "/scratch/izar/dinesh/checkpoints" \
