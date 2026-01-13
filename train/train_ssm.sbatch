@@ -32,4 +32,5 @@ srun python train/train_ssm.py \
     --state-change-reg-weight 0.860930481913434 \
     --state-change-threshold 1.4123737432567047 \
     --reg-loss-weight 0.01 \
+    --image-backbone resnet18 \
     --wandb-group "single-runs" \
