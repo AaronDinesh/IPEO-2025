@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "line-profiler>=5.0.0",
     "hyperopt>=0.2.7",
+    "matplotlib>=3.10.8",
 ]
 
 [[tool.uv.index]]
@@ -25,3 +26,8 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cuda" }
 torchvision = { index = "pytorch-cuda" }
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]
