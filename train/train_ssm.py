@@ -470,24 +470,22 @@ def run_hyperopt(args):
         ) from exc
 
     space = {
-        "learning_rate": hp.loguniform("learning_rate", np.log(1e-5), np.log(5e-3)),
         "focal_loss_weight": hp.uniform("focal_loss_weight", 0.0, 2.0),
         "reg_loss_weight": hp.uniform("reg_loss_weight", 0.0, 0.5),
-        "state_change_reg_weight": hp.uniform("state_change_reg_weight", 0.0, 1.0),
-        "state_change_threshold": hp.uniform("state_change_threshold", 0.5, 2.0),
-        "threshold": hp.uniform("threshold", 0.3, 0.7),
+        "tau": hp.uniform("tau", 0.5, 2.0),
     }
     trials = Trials()
     rstate = np.random.default_rng(args.hyperopt_seed)
 
     def objective(space_params):
         trial_args = argparse.Namespace(**vars(args))
-        trial_args.learning_rate = float(space_params["learning_rate"])
+        trial_args.learning_rate = float(args.learning_rate)
         trial_args.focal_loss_weight = float(space_params["focal_loss_weight"])
         trial_args.reg_loss_weight = float(space_params["reg_loss_weight"])
-        trial_args.state_change_reg_weight = float(space_params["state_change_reg_weight"])
-        trial_args.state_change_threshold = float(space_params["state_change_threshold"])
-        trial_args.threshold = float(space_params["threshold"])
+        trial_args.state_change_reg_weight = float(args.state_change_reg_weight)
+        trial_args.state_change_threshold = float(args.state_change_threshold)
+        trial_args.threshold = float(args.threshold)
+        trial_args.tau = float(space_params["tau"])
         trial_args.metric_for_best = args.hyperopt_metric
         trial_run_name = f"{args.wandb_run_name or 'hyperopt'}-trial{len(trials.trials)}"
         result = train_and_eval(
@@ -553,13 +551,13 @@ if __name__ == "__main__":
     parser.add_argument("--test", type=str, required=True, help="Path to the testing npz file")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch Size to use during training")
     parser.add_argument("--state-space-dim", type=int, default=256, help="Size of the state space vector")
-    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate used during training")
+    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning rate used during training")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs used during training")
-    parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for classification metrics")
+    parser.add_argument("--threshold", type=float, default=0.42016854191620334, help="Decision threshold for classification metrics")
     parser.add_argument("--tau", type=float, default=1.0, help="Strength of prior logit adjustment (recommended 0.5-2.0)")
     parser.add_argument("--precision-at-k", type=int, default=5, help="k used for precision@k")
-    parser.add_argument("--state-change-threshold", type=float, default=1.0, help="Threshold for state change magnitude before penalty applies")
-    parser.add_argument("--state-change-reg-weight", type=float, default=0.1, help="Weight for the state change penalty term")
+    parser.add_argument("--state-change-threshold", type=float, default=1.4123737432567047, help="Threshold for state change magnitude before penalty applies")
+    parser.add_argument("--state-change-reg-weight", type=float, default=0.860930481913434, help="Weight for the state change penalty term")
     parser.add_argument("--reg-loss-weight", type=float, default=0.1)
     parser.add_argument("--focal-loss-weight", type=float, default=0.1)
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
