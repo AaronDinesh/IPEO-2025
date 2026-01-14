@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import os
 import time
@@ -5,9 +7,7 @@ from typing import List, Optional, Tuple
 
 import joblib
 import numpy as np
-import torch
 from dotenv import load_dotenv
-from PIL import Image
 from sklearn.decomposition import PCA
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -19,9 +19,19 @@ from sklearn.metrics import (
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from torchvision import transforms
-from torchvision.models import ResNet18_Weights, ResNet50_Weights, resnet18, resnet50
 from tqdm import tqdm
+
+try:
+    import torch
+    from PIL import Image
+    from torchvision import transforms
+    from torchvision.models import ResNet18_Weights, ResNet50_Weights, resnet18, resnet50
+except ImportError:  # pragma: no cover - optional dependency
+    torch = None
+    Image = None
+    transforms = None
+    ResNet18_Weights = ResNet50_Weights = None
+    resnet18 = resnet50 = None
 
 try:
     from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
@@ -31,6 +41,14 @@ except ImportError:  # pragma: no cover - optional dependency
     fmin = None
     hp = None
     tpe = None
+
+
+def _require_image_deps():
+    if torch is None or transforms is None or resnet18 is None or resnet50 is None or Image is None:
+        raise ImportError(
+            "Image feature extraction requires torch, torchvision, and Pillow. "
+            "Install them or run with --no-images to skip image features."
+        )
 
 
 def compute_time_series_features(ts: np.ndarray) -> np.ndarray:
@@ -70,6 +88,7 @@ def compute_time_series_features(ts: np.ndarray) -> np.ndarray:
 def prepare_image_model(
     device: torch.device, backbone: str = "resnet50"
 ) -> Tuple[torch.nn.Module, transforms.Compose]:
+    _require_image_deps()
     backbone = backbone.lower()
     if backbone == "resnet18":
         weights = ResNet18_Weights.DEFAULT
@@ -482,9 +501,9 @@ def build_model(
 
 def build_features(
     npz_path: str,
-    model: torch.nn.Module,
-    transform: transforms.Compose,
-    device: torch.device,
+    model: Optional[torch.nn.Module],
+    transform: Optional[transforms.Compose],
+    device: Optional[torch.device],
     batch_size: int,
     use_images: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -502,6 +521,11 @@ def build_features(
         if use_images:
             if "images" not in data:
                 raise KeyError("Requested image features but 'images' not found in the dataset.")
+            if model is None or transform is None or device is None:
+                raise ValueError(
+                    "Image features requested but model/transform/device are missing. "
+                    "Pass --no-images to skip image features."
+                )
             imgs = data["images"]
             img_feats = extract_image_features(
                 imgs, model=model, transform=transform, device=device, batch_size=batch_size
@@ -613,19 +637,28 @@ def main():
     parser.add_argument("--hyperopt-seed", type=int, default=42, help="Random seed for Hyperopt.")
     args = parser.parse_args()
 
-    torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_images = not args.no_images
+    if use_images and torch is None:
+        raise ImportError(
+            "Image features requested but torch/torchvision/Pillow are not installed. "
+            "Install them or pass --no-images to skip image features."
+        )
+    if torch is not None:
+        torch.manual_seed(args.seed)
+
+    device: Optional[torch.device]
     if use_images:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         image_model, image_transform = prepare_image_model(device, backbone=args.image_backbone)
     else:
+        device = None
         image_model, image_transform = None, None
 
+    device_label = device if device is not None else "cpu"
     print(
         f"Building features (images={'on' if use_images else 'off'}, "
-        f"backbone={args.image_backbone}) on device {device}..."
+        f"backbone={args.image_backbone if use_images else 'n/a'}) on device {device_label}..."
     )
     X_train, y_train = build_features(
         args.train,
