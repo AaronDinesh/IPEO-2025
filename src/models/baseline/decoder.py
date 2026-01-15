@@ -20,7 +20,7 @@ class SpeciesDecoder(nn.Module):
                 nn.ReLU(inplace=True)
             ])
             
-        self.encoder = nn.Sequential(*layers)
+        self.decoder = nn.Sequential(*layers)
         
         # Add final output layer
         self.output_layer = nn.Linear(hidden_dim, output_dim)
@@ -29,6 +29,6 @@ class SpeciesDecoder(nn.Module):
         """
         Get logits for prediction
         """
-        x = self.encoder(x)
+        x = self.decoder(x)
         
         return self.output_layer(x)

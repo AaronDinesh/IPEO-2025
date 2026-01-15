@@ -2,7 +2,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from encoder import ClimateVarsEncoder, TimeSeriesEncoder, ResNet50Encoder
+from encoder import ClimateVarsEncoder, TimeSeriesEncoder, ResNetEncoder
 from decoder import SpeciesDecoder
 from torch.utils.data import Dataset
 import numpy as np
@@ -33,12 +33,12 @@ class MultiModalFuserBase(nn.Module):
     """
     Parent class for fusion models
     """
-    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1):
+    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout: float=0, rnn_layers: int=1, resnet_model: int=18):
         super().__init__()
         # Instantiate encoders for each modality
-        self.env_encoder = ClimateVarsEncoder(env_input_dim, hidden_dim, embed_dim)
+        self.env_encoder = ClimateVarsEncoder(env_input_dim, hidden_dim, embed_dim, dropout=dropout)
         self.time_encoder = TimeSeriesEncoder(landsat_input_dim, embed_dim, rnn_layers, dropout)
-        self.image_encoder = ResNet50Encoder(embed_dim)
+        self.image_encoder = ResNetEncoder(embed_dim, type=resnet_model)
         
         # Classification head
         self.decoder = SpeciesDecoder(embed_dim, hidden_dim)
@@ -47,8 +47,8 @@ class MultiModalSimpleFuser(MultiModalFuserBase):
     """
     Baseline model for fusing modalities
     """
-    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1, use_sum=True):
-        super().__init__(env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout, rnn_layers)
+    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1, use_sum=True, resnet_model: int=18):
+        super().__init__(env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout, rnn_layers, resnet_model)
                 
         # Fusion type
         self.use_sum = use_sum
@@ -72,10 +72,10 @@ class MultiModalAttentionFuser(MultiModalFuserBase):
     """
     Model using self attention as a fusing mechanism
     """
-    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1):
-        super().__init__(env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout, rnn_layers)
+    def __init__(self, env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout=0, rnn_layers=1, resnet_model: int=18):
+        super().__init__(env_input_dim, landsat_input_dim, hidden_dim, embed_dim, dropout, rnn_layers, resnet_model)
         
-        self.attn_pooling = LearnedAggregation(embed_dim)
+        self.attn_pooling = LearnedAggregation(embed_dim, dropout=dropout)
         
     def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
         # Encode modalities
@@ -100,13 +100,15 @@ class AttentionPool2d(nn.Module):
     def __init__(self,
         embed_dim: int,
         bias: bool=True,
-        norm: Callable[[int], nn.Module]=nn.LayerNorm
+        norm: Callable[[int], nn.Module]=nn.LayerNorm,
+        dropout: float=0.0
     ):
         super().__init__()
         self.norm = norm(embed_dim)
         self.q = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.vk = nn.Linear(embed_dim, embed_dim*2, bias=bias)
         self.proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = dropout
 
     def forward(self, x: torch.Tensor, cls_q: torch.Tensor):
         x = self.norm(x)
@@ -118,6 +120,7 @@ class AttentionPool2d(nn.Module):
 
         attn = q @ k.transpose(-2, -1).squeeze(0)
         attn = attn.softmax(dim=-1)
+        attn = F.dropout(attn, p=self.dropout, training=self.training)
 
         x = (attn @ v.squeeze(0)).transpose(1, 2).squeeze(-1) # shape (B,D)
         return self.proj(x)
@@ -132,6 +135,7 @@ class LearnedAggregation(nn.Module):
         ffn_expand: int|float=3,
         norm: Callable[[int], nn.Module]=nn.LayerNorm,
         act_cls: Callable[[None], nn.Module]=nn.GELU,
+        dropout: float=0.0
     ):
         super().__init__()
         self.gamma_1 = nn.Parameter(1e-4 * torch.ones(embed_dim))
@@ -142,7 +146,9 @@ class LearnedAggregation(nn.Module):
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, int(embed_dim*ffn_expand)),
             act_cls(),
-            nn.Linear(int(embed_dim*ffn_expand), embed_dim)
+            nn.Dropout(p=dropout),
+            nn.Linear(int(embed_dim*ffn_expand), embed_dim),
+            nn.Dropout(p=dropout),
         )
         nn.init.trunc_normal_(self.cls_q, std=0.02)
         self.apply(self._init_weights)
