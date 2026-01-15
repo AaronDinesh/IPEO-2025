@@ -1,6 +1,10 @@
 # IPEO-2025
 
-This project provides tools for running inference using the provided notebooks.
+This project provides tools for running inference using the provided notebooks. 
+
+# IMPORTANT
+
+Place the validation\_set.npz file in the `data/` directory
 
 ## Setup
 
