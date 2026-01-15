@@ -2,8 +2,8 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from encoder import ClimateVarsEncoder, TimeSeriesEncoder, ResNetEncoder
-from decoder import SpeciesDecoder
+from .encoder import ClimateVarsEncoder, TimeSeriesEncoder, ResNetEncoder
+from .decoder import SpeciesDecoder
 from torch.utils.data import Dataset
 import numpy as np
 
